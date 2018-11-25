@@ -3,45 +3,64 @@
 
 extern crate panic_halt;
 
-use cortex_m;
+use core::fmt::Write;
 use cortex_m_rt::entry;
-use tm4c129x;
+use nb::block;
+use tm4c129x_hal::gpio;
+use tm4c129x_hal::prelude::*;
+use tm4c129x_hal::sysctl::SysctlExt;
 
 #[entry]
 fn main() -> ! {
-    let p = tm4c129x::Peripherals::take().unwrap();
+    let p = tm4c129x_hal::Peripherals::take().unwrap();
+    let sc = p.SYSCTL.constrain();
+    let mut porta = p.GPIO_PORTA_AHB.split(&sc.power_control);
+    let portf = p.GPIO_PORTF_AHB.split(&sc.power_control);
+    let portj = p.GPIO_PORTJ_AHB.split(&sc.power_control);
+    let portn = p.GPIO_PORTN.split(&sc.power_control);
 
-    p.SYSCTL
-        .rcgcgpio
-        .write(|w| w.r5().set_bit().r12().set_bit());
-    p.GPIO_PORTF_AHB
-        .den
-        .write(|w| w.den().bits(1 << 0 | 1 << 4));
-    p.GPIO_PORTF_AHB
-        .dir
-        .write(|w| w.dir().bits(1 << 0 | 1 << 4));
-    p.GPIO_PORTN.den.write(|w| w.den().bits(1 << 0 | 1 << 1));
-    p.GPIO_PORTN.dir.write(|w| w.dir().bits(1 << 0 | 1 << 1));
+    let uart_rx_pin = porta
+        .pa0
+        .into_af_open_drain::<gpio::AF1, gpio::PullUp>(&mut porta.control);
+
+    let uart_tx_pin = porta
+        .pa1
+        .into_af_open_drain::<gpio::AF1, gpio::PullUp>(&mut porta.control);
+
+    let clocks = sc.clock_setup.freeze();
+
+    let mut serial = tm4c129x_hal::serial::Serial::uart0(
+        p.UART0,
+        uart_tx_pin,
+        uart_rx_pin,
+        (),
+        (),
+        115200.bps(),
+        tm4c129x_hal::serial::NewlineMode::SwapLFtoCRLF,
+        &clocks,
+        &sc.power_control,
+    );
+
+    writeln!(serial, "Hello, {}!", "world").unwrap();
+
+    let mut leds: [&mut embedded_hal::digital::OutputPin; 4] = [
+        &mut portn.pn1.into_push_pull_output(),
+        &mut portn.pn0.into_push_pull_output(),
+        &mut portf.pf4.into_push_pull_output(),
+        &mut portf.pf0.into_push_pull_output(),
+    ];
+    let button1 = portj.pj0.into_pull_up_input();
+    let button2 = portj.pj1.into_pull_up_input();
 
     loop {
-        p.GPIO_PORTN.data.write(|w| w.data().bits(1 << 1));
-        for _ in 0..10000 {
-            cortex_m::asm::nop();
-        }
-        p.GPIO_PORTN.data.write(|w| w.data().bits(1 << 0));
-        for _ in 0..10000 {
-            cortex_m::asm::nop();
-        }
-        p.GPIO_PORTN.data.write(|w| w.data().bits(0));
+        let limit = 1 + if button1.is_low() { 1 } else { 0 } + if button2.is_low() { 2 } else { 0 };
 
-        p.GPIO_PORTF_AHB.data.write(|w| w.data().bits(1 << 4));
-        for _ in 0..10000 {
-            cortex_m::asm::nop();
+        for led in &mut leds[0..limit] {
+            led.set_high();
+            for _ in 0..5000 {
+                cortex_m::asm::nop();
+            }
+            led.set_low();
         }
-        p.GPIO_PORTF_AHB.data.write(|w| w.data().bits(1 << 0));
-        for _ in 0..10000 {
-            cortex_m::asm::nop();
-        }
-        p.GPIO_PORTF_AHB.data.write(|w| w.data().bits(0));
     }
 }
