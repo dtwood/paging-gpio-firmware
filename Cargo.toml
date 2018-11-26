@@ -10,7 +10,7 @@ cortex-m = "0.5.7"
 cortex-m-rt = "0.6.3"
 embedded-hal = "*"
 nb = "*"
-panic-halt = "0.2.0"
+panic-semihosting = "*"
 
 [dependencies.tm4c129x-hal]
 features = ["rt"]

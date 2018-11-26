@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-extern crate panic_halt;
+extern crate panic_semihosting;
 
 use core::fmt::Write;
 use cortex_m_rt::entry;
