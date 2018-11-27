@@ -46,7 +46,12 @@ fn main() -> ! {
         &sc.power_control,
     );
 
-    writeln!(serial, "Hello, {}!", "world").unwrap();
+    writeln!(
+        serial,
+        "Chip information: {:#?}",
+        tm4c129x_hal::sysctl::chip_id::get()
+    )
+    .unwrap();
 
     let mut leds: [&mut embedded_hal::digital::OutputPin; 4] = [
         &mut portn.pn1.into_push_pull_output(),
