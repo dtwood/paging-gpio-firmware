@@ -6,10 +6,10 @@ name = "tiva-demo"
 version = "0.1.0"
 
 [dependencies]
-cortex-m = "0.5.7"
-cortex-m-rt = "0.6.3"
-embedded-hal = "*"
-panic-semihosting = "*"
+cortex-m = "0.5"
+cortex-m-rt = "0.6"
+embedded-hal = "0.2"
+panic-semihosting = "0.5"
 
 [dependencies.tm4c129x-hal]
 features = ["rt"]
