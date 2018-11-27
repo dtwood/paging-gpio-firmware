@@ -40,7 +40,7 @@ fn main() -> ! {
         uart_rx_pin,
         (),
         (),
-        115200.bps(),
+        115_200.bps(),
         tm4c129x_hal::serial::NewlineMode::SwapLFtoCRLF,
         &clocks,
         &sc.power_control,
@@ -67,7 +67,7 @@ fn main() -> ! {
 
         for led in &mut leds[0..limit] {
             led.set_high();
-            for _ in 0..500000 {
+            for _ in 0..500_000 {
                 cortex_m::asm::nop();
             }
             led.set_low();
