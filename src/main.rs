@@ -5,7 +5,6 @@ extern crate panic_semihosting;
 
 use core::fmt::Write;
 use cortex_m_rt::entry;
-use nb::block;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::SysctlExt;
