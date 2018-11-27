@@ -9,6 +9,7 @@ use nb::block;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::SysctlExt;
+use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
 
 #[entry]
 fn main() -> ! {
@@ -27,7 +28,12 @@ fn main() -> ! {
         .pa1
         .into_af_open_drain::<gpio::AF1, gpio::PullUp>(&mut porta.control);
 
-    let clocks = sc.clock_setup.freeze();
+    let mut clocks = sc.clock_setup;
+    clocks.oscillator = Oscillator::Main(
+        CrystalFrequency::_25mhz,
+        SystemClock::UsePll(PllOutputFrequency::_120mhz),
+    );
+    let clocks = clocks.freeze();
 
     let mut serial = tm4c129x_hal::serial::Serial::uart0(
         p.UART0,
@@ -57,7 +63,7 @@ fn main() -> ! {
 
         for led in &mut leds[0..limit] {
             led.set_high();
-            for _ in 0..5000 {
+            for _ in 0..500000 {
                 cortex_m::asm::nop();
             }
             led.set_low();
