@@ -4,11 +4,22 @@
 extern crate panic_semihosting;
 
 use core::fmt::Write;
-use cortex_m_rt::entry;
+use cortex_m_rt::{entry, exception};
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::SysctlExt;
 use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
+
+#[exception]
+fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
+    // prints the exception frame as a panic message
+    panic!("{:#?}", ef);
+}
+
+#[exception]
+fn DefaultHandler(irqn: i16) {
+    panic!("IRQ: {}", irqn);
+}
 
 #[entry]
 fn main() -> ! {
