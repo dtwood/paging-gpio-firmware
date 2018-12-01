@@ -5,6 +5,9 @@ extern crate panic_semihosting;
 
 use core::fmt::Write;
 use cortex_m_rt::{entry, exception};
+use cortex_m_semihosting::hprintln;
+use tivaware_sys;
+use tm4c129x;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::SysctlExt;
@@ -72,6 +75,51 @@ fn main() -> ! {
     ];
     let button1 = portj.pj0.into_pull_up_input();
     let button2 = portj.pj1.into_pull_up_input();
+
+    for led in &mut leds {
+        led.set_high();
+        for _ in 0..500_000 {
+            cortex_m::asm::nop();
+        }
+        led.set_low();
+    }
+
+    let _ = hprintln!("{}", line!());
+
+    unsafe {
+        // Enable and reset the MAC.
+        tivaware_sys::SysCtlPeripheralEnable(tivaware_sys::SYSCTL_PERIPH_EMAC0);
+        tivaware_sys::SysCtlPeripheralReset(tivaware_sys::SYSCTL_PERIPH_EMAC0);
+
+        // Enable and reset the internal PHY.
+        tivaware_sys::SysCtlPeripheralEnable(tivaware_sys::SYSCTL_PERIPH_EPHY0);
+        tivaware_sys::SysCtlPeripheralReset(tivaware_sys::SYSCTL_PERIPH_EPHY0);
+
+        // Ensure the MAC is completed its reset.
+        while !tivaware_sys::SysCtlPeripheralReady(tivaware_sys::SYSCTL_PERIPH_EMAC0) {}
+        // Set the PHY type and configuration options.
+        tivaware_sys::EMACPHYConfigSet(
+            tivaware_sys::EMAC0_BASE,
+            tivaware_sys::EMAC_PHY_TYPE_INTERNAL,
+        );
+        // Initialize and configure the MAC.
+        tivaware_sys::EMACInit(tivaware_sys::EMAC0_BASE, clocks.sysclk.0, 0, 0, 0, 0);
+        tivaware_sys::EMACConfigSet(
+            tivaware_sys::EMAC0_BASE,
+            tivaware_sys::EMAC_CONFIG_USE_MACADDR0
+                | tivaware_sys::EMAC_CONFIG_IF_GAP_40BITS
+                | tivaware_sys::EMAC_CONFIG_3BYTE_PREAMBLE
+                | tivaware_sys::EMAC_CONFIG_BO_LIMIT_2
+                | tivaware_sys::EMAC_CONFIG_SA_INSERT
+                | tivaware_sys::EMAC_CONFIG_FULL_DUPLEX
+                | tivaware_sys::EMAC_MODE_TX_THRESHOLD_16_BYTES
+                | tivaware_sys::EMAC_MODE_RX_THRESHOLD_64_BYTES,
+            0,
+            0,
+        );
+    }
+
+    let _ = hprintln!("{}", line!());
 
     loop {
         let limit = 1 + if button1.is_low() { 1 } else { 0 } + if button2.is_low() { 2 } else { 0 };

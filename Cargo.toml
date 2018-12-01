@@ -8,13 +8,16 @@ version = "0.1.0"
 [dependencies]
 cortex-m = "0.5"
 cortex-m-rt = "0.6"
+cortex-m-semihosting = "0.3.2"
 embedded-hal = "0.2"
 panic-semihosting = "0.5"
+tm4c129x = "0.7"
+tivaware-sys = { git = "https://github.com/dtwood/tivaware_sys" }
 
 [dependencies.tm4c129x-hal]
 features = ["rt"]
 version = "*"
-path = "./tm4c129x-hal"
+git = "https://github.com/dtwood/tm4c129x-hal"
 
 # this lets you use `cargo fix`!
 [[bin]]
