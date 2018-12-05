@@ -10,9 +10,12 @@ bare-metal = "*"
 cortex-m = "0.5"
 cortex-m-rt = "0.6"
 cortex-m-semihosting = "0.3.2"
+cty = "*"
 embedded-hal = "0.2"
 panic-semihosting = "0.5"
+smoltcp = { git = "https://github.com/m-labs/smoltcp", default_features = false, features = ["proto-ipv4", "socket-tcp"] }
 tm4c129x = "0.7"
+vcell = { version = "*", features = ["const-fn"] }
 
 [dependencies.tivaware-sys]
 git = "https://github.com/dtwood/tivaware-sys"
