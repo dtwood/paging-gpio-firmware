@@ -9,6 +9,9 @@
 # runner = "gdb-multiarch -q -x openocd.gdb"
 # runner = "gdb -q -x openocd.gdb"
 
+# uncomment this to flash with openocd on Windows
+# runner = "powershell.exe .\\run.ps1"
+
 rustflags = [
   # LLD (shipped with the Rust toolchain) is used as the default linker
   "-C", "link-arg=-Tlink.x",
