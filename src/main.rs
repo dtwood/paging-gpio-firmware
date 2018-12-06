@@ -1,10 +1,9 @@
 #![no_std]
 #![no_main]
 
-extern crate panic_semihosting;
-
 use bare_metal::Nr;
 use core::fmt::Write;
+use core::panic::PanicInfo;
 use cortex_m_rt::{entry, exception};
 use smoltcp::iface::{EthernetInterfaceBuilder, NeighborCache};
 use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, RxToken, TxToken};
@@ -31,6 +30,14 @@ macro_rules! println {
         unsafe {
             let _ = writeln!(SERIAL.as_mut().unwrap(), $fmt, $($arg)*);
         }
+    }
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    println!("{}", info);
+    loop {
+        cortex_m::asm::wfi();
     }
 }
 
@@ -380,14 +387,14 @@ mod mock {
 #[repr(C)]
 union emac_des3 {
     link: *mut emac_descriptor,
-    buffer_ext: *mut cty::c_void,
+    buffer_ext: *mut u8,
 }
 
 #[repr(C)]
 struct emac_descriptor {
     ctrl_status: VolatileCell<u32>,
     buffer_len: u32,
-    buffer: *mut cty::c_void,
+    buffer: *mut u8,
     link_or_buffer_ext: emac_des3,
     ext_rx_status: u32,
     reserved: u32,
