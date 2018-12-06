@@ -17,6 +17,7 @@ use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::SysctlExt;
 use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
+use vcell::VolatileCell;
 
 macro_rules! println {
     ($fmt:expr) => {
@@ -131,15 +132,17 @@ impl Tm4cEthernetDevice {
                 } else {
                     &mut TX_DESCRIPTORS[i + 1] as *mut _
                 };
-                TX_DESCRIPTORS[i].ctrl_status = DES0_TX_CTRL_LAST_SEG
-                    | DES0_TX_CTRL_FIRST_SEG
-                    | DES0_TX_CTRL_INTERRUPT
-                    | DES0_TX_CTRL_CHAINED
-                    | DES0_TX_CTRL_IP_ALL_CKHSUMS;
+                TX_DESCRIPTORS[i].ctrl_status.set(
+                    DES0_TX_CTRL_LAST_SEG
+                        | DES0_TX_CTRL_FIRST_SEG
+                        | DES0_TX_CTRL_INTERRUPT
+                        | DES0_TX_CTRL_CHAINED
+                        | DES0_TX_CTRL_IP_ALL_CKHSUMS,
+                );
             }
 
             for i in 0..NUM_RX_DESCRIPTORS {
-                RX_DESCRIPTORS[i].ctrl_status = DES0_RX_CTRL_OWN;
+                RX_DESCRIPTORS[i].ctrl_status.set(DES0_RX_CTRL_OWN);
                 RX_DESCRIPTORS[i].buffer_len =
                     DES1_RX_CTRL_CHAINED | ((RX_BUFFER_SIZE as u32) << DES1_RX_CTRL_BUFF1_SIZE_S);
                 RX_DESCRIPTORS[i].buffer = &mut RX_BUFFERS[i][0] as *mut u8 as *mut _;
@@ -188,15 +191,21 @@ impl<'a> Device<'a> for Tm4cEthernetDevice {
     fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
         // Make sure that we own the receive descriptor.
         unsafe {
-            if RX_DESCRIPTORS[self.rx_index].ctrl_status & DES0_RX_CTRL_OWN == DES0_RX_CTRL_OWN {
+            if RX_DESCRIPTORS[self.rx_index].ctrl_status.get() & DES0_RX_CTRL_OWN
+                == DES0_RX_CTRL_OWN
+            {
                 return None;
             }
 
-            if TX_DESCRIPTORS[self.tx_index].ctrl_status & DES0_TX_CTRL_OWN == DES0_TX_CTRL_OWN {
+            if TX_DESCRIPTORS[self.tx_index].ctrl_status.get() & DES0_TX_CTRL_OWN
+                == DES0_TX_CTRL_OWN
+            {
+                println!("receive no tx buffers");
                 return None;
             }
         }
 
+        println!("receive got both buffers");
         let result = Some((
             Tm4cRxToken {
                 descriptor: unsafe { &mut RX_DESCRIPTORS[self.rx_index] },
@@ -220,8 +229,13 @@ impl<'a> Device<'a> for Tm4cEthernetDevice {
     }
 
     fn transmit(&'a mut self) -> Option<(Self::TxToken)> {
+        println!("transmit");
+
         unsafe {
-            if TX_DESCRIPTORS[self.tx_index].ctrl_status & DES0_TX_CTRL_OWN == DES0_TX_CTRL_OWN {
+            if TX_DESCRIPTORS[self.tx_index].ctrl_status.get() & DES0_TX_CTRL_OWN
+                == DES0_TX_CTRL_OWN
+            {
+                println!("tx no buffer");
                 return None;
             }
         }
@@ -234,6 +248,8 @@ impl<'a> Device<'a> for Tm4cEthernetDevice {
         if self.tx_index == NUM_TX_DESCRIPTORS {
             self.tx_index = 0;
         }
+
+        println!("tx returning");
 
         result
     }
@@ -263,13 +279,16 @@ impl<'a> RxToken for Tm4cRxToken<'a> {
 
         unsafe {
             // We own the receive descriptor so check to see if it contains a valid frame.
-            if self.descriptor.ctrl_status & DES0_RX_STAT_ERR != DES0_RX_STAT_ERR {
+            if self.descriptor.ctrl_status.get() & DES0_RX_STAT_ERR != DES0_RX_STAT_ERR {
                 // We have a valid frame. First check that the "last descriptor" flag is set. We
                 // sized the receive buffer such that it can always hold a valid frame so this
                 // flag should never be clear at this point but...
-                if self.descriptor.ctrl_status & DES0_RX_STAT_LAST_DESC == DES0_RX_STAT_LAST_DESC {
+                if self.descriptor.ctrl_status.get() & DES0_RX_STAT_LAST_DESC
+                    == DES0_RX_STAT_LAST_DESC
+                {
                     // What size is the received frame?
-                    let frame_len = (self.descriptor.ctrl_status & DES0_RX_STAT_FRAME_LENGTH_M)
+                    let frame_len = (self.descriptor.ctrl_status.get()
+                        & DES0_RX_STAT_FRAME_LENGTH_M)
                         >> DES0_RX_STAT_FRAME_LENGTH_S;
                     let data = core::slice::from_raw_parts(
                         self.descriptor.buffer as *mut u8,
@@ -286,7 +305,7 @@ impl<'a> RxToken for Tm4cRxToken<'a> {
                 println!("rx checksum");
                 result = Err(smoltcp::Error::Checksum);
             }
-            self.descriptor.ctrl_status = DES0_RX_CTRL_OWN;
+            self.descriptor.ctrl_status.set(DES0_RX_CTRL_OWN);
         }
         println!("rx end consume");
 
@@ -316,11 +335,13 @@ impl<'a> TxToken for Tm4cTxToken<'a> {
             // Fill in the packet size and pointer, and tell the transmitter to start work.
             self.descriptor.buffer_len = len as u32;
             self.descriptor.buffer = &mut data as *mut _ as *mut _;
-            self.descriptor.ctrl_status = DES0_TX_CTRL_LAST_SEG
-                | DES0_TX_CTRL_FIRST_SEG
-                | DES0_TX_CTRL_INTERRUPT
-                | DES0_TX_CTRL_CHAINED
-                | DES0_TX_CTRL_OWN;
+            self.descriptor.ctrl_status.set(
+                DES0_TX_CTRL_LAST_SEG
+                    | DES0_TX_CTRL_FIRST_SEG
+                    | DES0_TX_CTRL_INTERRUPT
+                    | DES0_TX_CTRL_CHAINED
+                    | DES0_TX_CTRL_OWN,
+            );
 
             // Tell the DMA to reacquire the descriptor now that we've filled it in. This
             // call is benign if the transmitter hasn't stalled and checking the state takes
@@ -357,16 +378,14 @@ mod mock {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
 union emac_des3 {
     link: *mut emac_descriptor,
     buffer_ext: *mut cty::c_void,
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
 struct emac_descriptor {
-    ctrl_status: u32,
+    ctrl_status: VolatileCell<u32>,
     buffer_len: u32,
     buffer: *mut cty::c_void,
     link_or_buffer_ext: emac_des3,
@@ -378,7 +397,7 @@ struct emac_descriptor {
 
 const fn d() -> emac_descriptor {
     emac_descriptor {
-        ctrl_status: 0,
+        ctrl_status: VolatileCell::new(0),
         buffer_len: 0,
         buffer: core::ptr::null_mut(),
         link_or_buffer_ext: emac_des3 {
