@@ -1,6 +1,5 @@
-use crate::println;
 use byteorder::ByteOrder;
-use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, RxToken, TxToken};
+use smoltcp::phy::{Checksum, ChecksumCapabilities, Device, DeviceCapabilities, RxToken, TxToken};
 use smoltcp::time::Instant;
 use tivaware_sys::*;
 use tm4c129x::EMAC0;
@@ -50,10 +49,6 @@ const RX_BUFFER_SIZE: usize = 1536;
 static mut RX_BUFFERS: [[u8; RX_BUFFER_SIZE]; NUM_RX_DESCRIPTORS] =
     [[0; RX_BUFFER_SIZE]; NUM_RX_DESCRIPTORS];
 
-extern "C" {
-    fn SysCtlDelay(ui32Count: u32);
-}
-
 fn emac_reset(emac0: &EMAC0) {
     emac0.dmabusmod.modify(|_, w| w.swr().set_bit());
 
@@ -73,7 +68,9 @@ fn emac_phy_config_set(
     let pc = emac0.pc.read();
     if pc.phyext().bit_is_clear() {
         tm4c129x_hal::sysctl::reset(lock, tm4c129x_hal::sysctl::Domain::Ephy0);
-        unsafe { SysCtlDelay(10000) };
+        for _ in 0..10000 {
+            cortex_m::asm::nop();
+        }
     }
 
     // TI's register definitions seem to disagree with the datasheet here - this
@@ -89,15 +86,17 @@ fn emac_phy_config_set(
 
     tm4c129x_hal::sysctl::reset(lock, tm4c129x_hal::sysctl::Domain::Emac0);
 
-    unsafe { SysCtlDelay(1000) };
+    for _ in 0..1000 {
+        cortex_m::asm::nop();
+    }
 }
 
 fn emac_init(
-    _emac: &EMAC0,
+    emac0: &EMAC0,
     _sysclk: u32,
     _bus_config: u32,
-    rx_burst: u32,
-    tx_burst: u32,
+    mut rx_burst: u32,
+    mut tx_burst: u32,
     desc_skip_size: u32,
 ) {
     // uint32_t ui32Val, ui32Div;
@@ -118,59 +117,49 @@ fn emac_init(
     // while(HWREG(EMAC0_BASE + EMAC_O_DMABUSMOD) & EMAC_DMABUSMOD_SWR)
     // {
     // }
+    while emac0.dmabusmod.read().swr().bit_is_set() {}
 
-    // //
-    // // Set common flags.  Note that this driver assumes we are always using
-    // // 8 word descriptors so we need to OR in EMAC_DMABUSMOD_ATDS here.
-    // //
-    // ui32Val = (ui32BusConfig | (ui32DescSkipSize << EMAC_DMABUSMOD_DSL_S) |
-    //            EMAC_DMABUSMOD_ATDS);
+    emac0.dmabusmod.modify(|_, w| {
+        // Set common flags.  Note that this driver assumes we are always using 8 word
+        // descriptors so we need to OR in EMAC_DMABUSMOD_ATDS here.
 
-    // //
-    // // Do we need to use the 8X burst length multiplier?
-    // //
-    // if((ui32TxBurst > 32) || (ui32RxBurst > 32))
-    // {
-    //     //
-    //     // Divide both burst lengths by 8 and set the 8X burst length
-    //     // multiplier.
-    //     //
-    //     ui32Val |= EMAC_DMABUSMOD_8XPBL;
-    //     ui32TxBurst >>= 3;
-    //     ui32RxBurst >>= 3;
+        // Do we need to use the 8X burst length multiplier?
 
-    //     //
-    //     // Sanity check - neither burst length should have become zero.  If
-    //     // they did, this indicates that the values passed are invalid.
-    //     //
-    //     ASSERT(ui32RxBurst);
-    //     ASSERT(ui32TxBurst);
-    // }
+        if tx_burst > 32 || rx_burst > 32 {
+            // Divide both burst lengths by 8 and set the 8X burst length multiplier.
+            w._8xpbl().set_bit();
+            tx_burst >>= 3;
+            rx_burst >>= 3;
 
-    // //
-    // // Are the receive and transmit burst lengths the same?
-    // //
-    // if(ui32RxBurst == ui32TxBurst)
-    // {
-    //     //
-    //     // Yes - set up to use a single burst length.
-    //     //
-    //     ui32Val |= (ui32TxBurst << EMAC_DMABUSMOD_PBL_S);
-    // }
-    // else
-    // {
-    //     //
-    //     // No - we need to use separate burst lengths for each.
-    //     //
-    //     ui32Val |= (EMAC_DMABUSMOD_USP |
-    //                 (ui32TxBurst << EMAC_DMABUSMOD_PBL_S) |
-    //                 (ui32RxBurst << EMAC_DMABUSMOD_RPBL_S));
-    // }
+            // Sanity check - neither burst length should have become zero.  If they did,
+            // this indicates that the values passed are invalid.
+            assert!(tx_burst > 0);
+            assert!(rx_burst > 0);
+        } else {
+            w._8xpbl().clear_bit();
+        }
 
-    // //
-    // // Finally, write the bus mode register.
-    // //
-    // HWREG(ui32Base + EMAC_O_DMABUSMOD) = ui32Val;
+        let tx_burst = tx_burst as u8;
+        let rx_burst = rx_burst as u8;
+
+        // Are the receive and transmit burst lengths the same?
+        unsafe {
+            w.pbl().bits(tx_burst);
+        }
+        if rx_burst == tx_burst {
+            // Yes - set up to use a single burst length.
+            w.usp().clear_bit();
+        } else {
+            // No - we need to use separate burst lengths for each.
+            w.usp().set_bit();
+            unsafe {
+                w.rpbl().bits(rx_burst);
+            }
+        }
+
+        // Finally, write the bus mode register.
+        w
+    });
 
     // //
     // // Default the MII CSR clock divider based on the fastest system clock.
@@ -195,52 +184,11 @@ fn emac_init(
     // HWREG(ui32Base + EMAC_O_MIIADDR) = ((HWREG(ui32Base + EMAC_O_MIIADDR) &
     //                                      ~EMAC_MIIADDR_CR_M) | ui32Div);
 
-    // //
-    // // Disable all the MMC interrupts as these are enabled by default at reset.
-    // //
-    // HWREG(ui32Base + EMAC_O_MMCRXIM) = 0xFFFFFFFF;
-    // HWREG(ui32Base + EMAC_O_MMCTXIM) = 0xFFFFFFFF;
-}
-
-fn emac_config_set(_emac0: &EMAC0, _config: u32, _mode_flags: u32, _rx_max_frame_size: u32) {
-    //     //
-    //     // Parameter sanity check.  Note that we allow TX_ENABLED and RX_ENABLED
-    //     // here because we'll mask them off before writing the value and this
-    //     // makes back-to-back EMACConfigGet/EMACConfigSet calls work without the
-    //     // caller needing to explicitly remove these bits from the parameter.
-    //     //
-    //     ASSERT((ui32Config & ~(VALID_CONFIG_FLAGS |  EMAC_CONFIG_TX_ENABLED |
-    //                            EMAC_CONFIG_RX_ENABLED)) == 0);
-    //     ASSERT(!ui32RxMaxFrameSize || ((ui32RxMaxFrameSize < 0x4000) &&
-    //                                    (ui32RxMaxFrameSize > 1522)));
-
-    //     //
-    //     // Set the configuration flags as specified.  Note that we
-    // unconditionally     // OR in the EMAC_CFG_PS bit here since this
-    // implementation supports only     // MII and RMII interfaces to the PHYs.
-    //     //
-    //     HWREG(ui32Base + EMAC_O_CFG) =
-    //         ((HWREG(ui32Base + EMAC_O_CFG) & ~VALID_CONFIG_FLAGS) | ui32Config |
-    //          EMAC_CFG_PS);
-
-    //     //
-    //     // Set the maximum receive frame size.  If 0 is passed, this implies
-    //     // that the default maximum frame size should be used so just turn off
-    //     // the override.
-    //     //
-    //     if(ui32RxMaxFrameSize)
-    //     {
-    //         HWREG(ui32Base + EMAC_O_WDOGTO) = ui32RxMaxFrameSize |
-    // EMAC_WDOGTO_PWE;     }
-    //     else
-    //     {
-    //         HWREG(ui32Base + EMAC_O_WDOGTO) &= ~EMAC_WDOGTO_PWE;
-    //     }
-
-    //     //
-    //     // Set the operating mode register.
-    //     //
-    //     HWREG(ui32Base + EMAC_O_DMAOPMODE) = ui32ModeFlags;
+    // Disable all the MMC interrupts as these are enabled by default at reset.
+    unsafe {
+        emac0.mmcrxim.write(|w| w.bits(0xffffffff));
+        emac0.mmctxim.write(|w| w.bits(0xffffffff));
+    }
 }
 
 fn emac_primary_addr_set(emac0: &EMAC0, mac_addr: [u8; 6]) {
@@ -350,21 +298,31 @@ impl Tm4cEthernetDevice {
             1,
         );
 
-        emac_config_set(
-            &emac0,
-            EMAC_CONFIG_FULL_DUPLEX
-                | EMAC_CONFIG_CHECKSUM_OFFLOAD
-                | EMAC_CONFIG_7BYTE_PREAMBLE
-                | EMAC_CONFIG_IF_GAP_96BITS
-                | EMAC_CONFIG_USE_MACADDR0
-                | EMAC_CONFIG_SA_FROM_DESCRIPTOR
-                | EMAC_CONFIG_BO_LIMIT_1024,
-            EMAC_MODE_RX_STORE_FORWARD
-                | EMAC_MODE_TX_STORE_FORWARD
-                | EMAC_MODE_TX_THRESHOLD_64_BYTES
-                | EMAC_MODE_RX_THRESHOLD_64_BYTES,
-            0,
-        );
+        // Set the configuration flags as specified.  Note that we unconditionally
+        // OR in the EMAC_CFG_PS bit here since this implementation supports only
+        // MII and RMII interfaces to the PHYs.
+        emac0.cfg.modify(|_, w| {
+            w.dupm().set_bit();
+            w.ipc().set_bit();
+            w.ifg()._96();
+            w.cst().set_bit();
+            w.acs().set_bit();
+            // w.saddr().bits(0x02);
+            w.bl()._1024();
+
+            w
+        });
+
+        emac0.wdogto.write(|w| w.pwe().clear_bit());
+
+        emac0.dmaopmode.write(|w| {
+            w.rsf().set_bit();
+            w.tsf().set_bit();
+            w.ttc()._64();
+            w.rtc()._64();
+
+            w
+        });
 
         unsafe {
             for i in 0..NUM_TX_DESCRIPTORS {
@@ -374,13 +332,7 @@ impl Tm4cEthernetDevice {
                 } else {
                     &mut TX_DESCRIPTORS[i + 1] as *mut _
                 };
-                TX_DESCRIPTORS[i].ctrl_status.set(
-                    DES0_TX_CTRL_LAST_SEG
-                        | DES0_TX_CTRL_FIRST_SEG
-                        | DES0_TX_CTRL_INTERRUPT
-                        | DES0_TX_CTRL_CHAINED
-                        | DES0_TX_CTRL_IP_ALL_CKHSUMS,
-                );
+                TX_DESCRIPTORS[i].ctrl_status.set(0);
             }
 
             for i in 0..NUM_RX_DESCRIPTORS {
@@ -443,30 +395,17 @@ impl<'a> Device<'a> for Tm4cEthernetDevice {
             {
                 return None;
             }
-
-            if TX_DESCRIPTORS[self.tx_index].ctrl_status.get() & DES0_TX_CTRL_OWN
-                == DES0_TX_CTRL_OWN
-            {
-                println!("receive no tx buffers");
-                return None;
-            }
         }
 
-        println!("receive got both buffers");
         let result = Some((
             Tm4cRxToken {
                 descriptor: unsafe { &mut RX_DESCRIPTORS[self.rx_index] },
             },
             Tm4cTxToken {
-                descriptor: unsafe { &mut TX_DESCRIPTORS[self.tx_index] },
+                index: &mut self.tx_index,
                 emac0: &mut self.emac0,
             },
         ));
-
-        self.tx_index += 1;
-        if self.tx_index == NUM_TX_DESCRIPTORS {
-            self.tx_index = 0;
-        }
 
         self.rx_index += 1;
         if self.rx_index == NUM_RX_DESCRIPTORS {
@@ -477,28 +416,10 @@ impl<'a> Device<'a> for Tm4cEthernetDevice {
     }
 
     fn transmit(&'a mut self) -> Option<(Self::TxToken)> {
-        println!("transmit");
-
-        unsafe {
-            if TX_DESCRIPTORS[self.tx_index].ctrl_status.get() & DES0_TX_CTRL_OWN
-                == DES0_TX_CTRL_OWN
-            {
-                println!("tx no buffer");
-                return None;
-            }
-        }
-
         let result = Some(Tm4cTxToken {
-            descriptor: unsafe { &mut TX_DESCRIPTORS[self.tx_index] },
+            index: &mut self.tx_index,
             emac0: &mut self.emac0,
         });
-
-        self.tx_index += 1;
-        if self.tx_index == NUM_TX_DESCRIPTORS {
-            self.tx_index = 0;
-        }
-
-        println!("tx returning");
 
         result
     }
@@ -508,7 +429,14 @@ impl<'a> Device<'a> for Tm4cEthernetDevice {
 
         cap.max_transmission_unit = RX_BUFFER_SIZE;
         cap.max_burst_size = Some(1);
+
         cap.checksum = ChecksumCapabilities::ignored();
+        cap.checksum.ipv4 = Checksum::None;
+        // cap.checksum.ipv6 = Checksum::None;
+        cap.checksum.udp = Checksum::None;
+        cap.checksum.tcp = Checksum::None;
+        cap.checksum.icmpv4 = Checksum::None;
+        cap.checksum.icmpv6 = Checksum::None;
 
         cap
     }
@@ -523,7 +451,6 @@ impl<'a> RxToken for Tm4cRxToken<'a> {
     where
         F: FnOnce(&[u8]) -> smoltcp::Result<R>,
     {
-        println!("rx start consume");
         let result;
 
         unsafe {
@@ -543,34 +470,23 @@ impl<'a> RxToken for Tm4cRxToken<'a> {
                         self.descriptor.buffer as *mut u8,
                         frame_len as usize,
                     );
-                    println!("RX: {:?}", data);
                     result = f(data);
-                    println!("rx processed");
                 } else {
-                    println!("rx truncated");
                     result = Err(smoltcp::Error::Truncated);
                 }
             } else {
-                println!("rx checksum");
                 result = Err(smoltcp::Error::Checksum);
             }
             self.descriptor.ctrl_status.set(DES0_RX_CTRL_OWN);
         }
-        println!("rx end consume");
 
         result
     }
 }
 
 pub struct Tm4cTxToken<'a> {
-    descriptor: &'a mut emac_descriptor,
+    index: &'a mut usize,
     emac0: &'a mut EMAC0,
-}
-
-impl<'a> Drop for Tm4cTxToken<'a> {
-    fn drop(&mut self) {
-        println!("dropping tx token");
-    }
 }
 
 impl<'a> TxToken for Tm4cTxToken<'a> {
@@ -578,8 +494,15 @@ impl<'a> TxToken for Tm4cTxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
     {
-        println!("tx start consume");
         let result;
+
+        let descriptor = unsafe { &mut TX_DESCRIPTORS[*self.index] };
+        *self.index += 1;
+        if *self.index == NUM_TX_DESCRIPTORS {
+            *self.index = 0;
+        }
+
+        while descriptor.ctrl_status.get() & DES0_TX_CTRL_OWN == DES0_TX_CTRL_OWN {}
 
         assert!(len <= RX_BUFFER_SIZE);
 
@@ -587,22 +510,20 @@ impl<'a> TxToken for Tm4cTxToken<'a> {
         result = f(&mut data);
 
         // Fill in the packet size and pointer, and tell the transmitter to start work.
-        self.descriptor.buffer_len = len as u32;
-        self.descriptor.buffer = &mut data as *mut _ as *mut _;
-        self.descriptor.ctrl_status.set(
+        descriptor.buffer_len = len as u32;
+        descriptor.buffer = &mut data as *mut _ as *mut _;
+        descriptor.ctrl_status.set(
             DES0_TX_CTRL_LAST_SEG
                 | DES0_TX_CTRL_FIRST_SEG
-                | DES0_TX_CTRL_INTERRUPT
                 | DES0_TX_CTRL_CHAINED
-                | DES0_TX_CTRL_OWN,
+                | DES0_TX_CTRL_OWN
+                | DES0_TX_CTRL_IP_ALL_CKHSUMS,
         );
 
         // Tell the DMA to reacquire the descriptor now that we've filled it in. This
         // call is benign if the transmitter hasn't stalled and checking the state takes
         // longer than just issuing a poll demand so we do this for all packets.
         self.emac0.txpolld.write(|w| w);
-
-        println!("tx end consume");
 
         result
     }

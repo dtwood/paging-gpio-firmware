@@ -8,15 +8,18 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use cortex_m_rt::{entry, exception};
 use smoltcp::iface::{EthernetInterfaceBuilder, NeighborCache};
-use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
-use smoltcp::time::Duration;
+use smoltcp::socket::SocketSet;
+// use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
+use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
 use tm4c129x;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
+use tm4c129x_hal::sysctl::Clocks;
 use tm4c129x_hal::sysctl::SysctlExt;
 use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
 
+#[no_mangle]
 pub fn get_stdout() -> impl Write {
     unsafe { SERIAL.as_mut().unwrap() }
 }
@@ -76,25 +79,45 @@ static mut SERIAL: Option<
     >,
 > = None;
 
-mod mock {
-    use core::cell::Cell;
-    use smoltcp::time::{Duration, Instant};
+pub struct Clock {
+    systick: tm4c129x::SYST,
+    ticks_per_10ms: u64,
+    instant: Instant,
+}
 
-    #[derive(Debug)]
-    pub struct Clock(Cell<Instant>);
+impl Clock {
+    pub fn new(mut systick: tm4c129x::SYST, _clocks: Clocks) -> Clock {
+        systick.set_reload(100);
+        systick.clear_current();
 
-    impl Clock {
-        pub fn new() -> Clock {
-            Clock(Cell::new(Instant::from_millis(0)))
+        let ticks_per_10ms = cortex_m::peripheral::SYST::get_ticks_per_10ms().into();
+        assert!(ticks_per_10ms != 0);
+
+        Clock {
+            systick,
+            ticks_per_10ms,
+            instant: Instant::from_millis(0),
+        }
+    }
+
+    pub fn advance(&mut self, duration: Duration) {
+        let mut reload = ((self.ticks_per_10ms * duration.total_millis()) / 10) as u32;
+
+        while reload > 0 {
+            self.systick.set_reload(reload & 0x00ffffff);
+            reload -= cortex_m::peripheral::SYST::get_reload();
+            self.systick.clear_current();
+
+            self.systick.enable_counter();
+            while !self.systick.has_wrapped() {}
+            self.systick.disable_counter();
         }
 
-        pub fn advance(&self, duration: Duration) {
-            self.0.set(self.0.get() + duration)
-        }
+        self.instant += duration;
+    }
 
-        pub fn elapsed(&self) -> Instant {
-            self.0.get()
-        }
+    pub fn elapsed(&mut self) -> Instant {
+        self.instant
     }
 }
 
@@ -159,95 +182,97 @@ fn main() -> ! {
         led.set_low();
     }
 
-    let clock = mock::Clock::new();
+    let mut clock = Clock::new(core_p.SYST, clocks);
     let device = Tm4cEthernetDevice::new(&sc.power_control, clocks, &mut core_p.NVIC, p.EMAC0);
     let mut neighbor_cache_entries = [None; 8];
     let neighbor_cache = NeighborCache::new(&mut neighbor_cache_entries[..]);
 
     let mut ip_addrs = [IpCidr::new(IpAddress::v4(10, 5, 2, 2), 8)];
     let mut iface = EthernetInterfaceBuilder::new(device)
-        .ethernet_addr(EthernetAddress::default())
+        .ethernet_addr(EthernetAddress([0x00u8, 0x1A, 0xB6, 0x00, 0x02, 0x74]))
         .neighbor_cache(neighbor_cache)
         .ip_addrs(&mut ip_addrs[..])
         .finalize();
 
-    let server_socket = {
-        // It is not strictly necessary to use a `static mut` and unsafe code here, but
-        // on embedded systems that smoltcp targets it is far better to allocate the
-        // data statically to verify that it fits into RAM rather than get
-        // undefined behavior when stack overflows.
-        static mut TCP_SERVER_RX_DATA: [u8; 1024] = [0; 1024];
-        static mut TCP_SERVER_TX_DATA: [u8; 1024] = [0; 1024];
-        let tcp_rx_buffer = TcpSocketBuffer::new(unsafe { &mut TCP_SERVER_RX_DATA[..] });
-        let tcp_tx_buffer = TcpSocketBuffer::new(unsafe { &mut TCP_SERVER_TX_DATA[..] });
-        TcpSocket::new(tcp_rx_buffer, tcp_tx_buffer)
-    };
-
-    let client_socket = {
-        static mut TCP_CLIENT_RX_DATA: [u8; 1024] = [0; 1024];
-        static mut TCP_CLIENT_TX_DATA: [u8; 1024] = [0; 1024];
-        let tcp_rx_buffer = TcpSocketBuffer::new(unsafe { &mut TCP_CLIENT_RX_DATA[..] });
-        let tcp_tx_buffer = TcpSocketBuffer::new(unsafe { &mut TCP_CLIENT_TX_DATA[..] });
-        TcpSocket::new(tcp_rx_buffer, tcp_tx_buffer)
-    };
+    // It is not strictly necessary to use a `static mut` and unsafe code here, but
+    // on embedded systems that smoltcp targets it is far better to allocate the
+    // data statically to verify that it fits into RAM rather than get
+    // undefined behavior when stack overflows.
+    // let server_socket = TcpSocket::new(
+    //     TcpSocketBuffer::new(unsafe {
+    //         static mut TCP_SERVER_RX_DATA: [u8; 1024] = [0; 1024];
+    //         &mut TCP_SERVER_RX_DATA[..]
+    //     }),
+    //     TcpSocketBuffer::new(unsafe {
+    //         static mut TCP_SERVER_TX_DATA: [u8; 1024] = [0; 1024];
+    //         &mut TCP_SERVER_TX_DATA[..]
+    //     }),
+    // );
+    // let client_socket = TcpSocket::new(
+    //     TcpSocketBuffer::new(unsafe {
+    //         static mut TCP_CLIENT_RX_DATA: [u8; 1024] = [0; 1024];
+    //         &mut TCP_CLIENT_RX_DATA[..]
+    //     }),
+    //     TcpSocketBuffer::new(unsafe {
+    //         static mut TCP_CLIENT_TX_DATA: [u8; 1024] = [0; 1024];
+    //         &mut TCP_CLIENT_TX_DATA[..]
+    //     }),
+    // );
 
     let mut socket_set_entries: [_; 2] = Default::default();
     let mut socket_set = SocketSet::new(&mut socket_set_entries[..]);
-    let server_handle = socket_set.add(server_socket);
-    let client_handle = socket_set.add(client_socket);
+    // let server_handle = socket_set.add(server_socket);
+    // let client_handle = socket_set.add(client_socket);
 
-    let mut did_listen = false;
-    let mut did_connect = false;
+    // let mut did_listen = false;
+    // let mut did_connect = false;
 
     loop {
-        iface.poll(&mut socket_set, clock.elapsed()).unwrap();
+        while iface.poll(&mut socket_set, clock.elapsed()).is_err() {}
 
-        {
-            let mut socket = socket_set.get::<TcpSocket>(server_handle);
-            if !socket.is_active() && !socket.is_listening() {
-                if !did_listen {
-                    println!("listening");
-                    socket.listen(1234).unwrap();
-                    did_listen = true;
-                }
-            }
+        // {
+        //     let mut socket = socket_set.get::<TcpSocket>(server_handle);
+        //     if !socket.is_active() && !socket.is_listening() {
+        //         if !did_listen {
+        //             println!("listening");
+        //             socket.listen(65000).unwrap();
+        //             did_listen = true;
+        //         }
+        //     }
 
-            if socket.can_recv() {
-                println!("can rx");
-                println!("got {:?}", socket.recv(|buffer| (buffer.len(), buffer)));
-            }
-        }
+        //     if socket.can_recv() {
+        //         println!("can rx");
+        //         println!("got {:?}", socket.recv(|buffer| (buffer.len(), buffer)));
+        //     }
+        // }
 
-        {
-            let mut socket = socket_set.get::<TcpSocket>(client_handle);
-            if !socket.is_open() {
-                if !did_connect {
-                    println!("connecting");
-                    socket
-                        .connect(
-                            (IpAddress::v4(127, 0, 0, 1), 1234),
-                            (IpAddress::Unspecified, 65000),
-                        )
-                        .unwrap();
-                    println!("after connect");
-                    did_connect = true;
-                }
-            }
+        // {
+        //     let mut socket = socket_set.get::<TcpSocket>(client_handle);
+        //     if !socket.is_open() {
+        //         if !did_connect {
+        //             println!("connecting");
+        //             socket
+        //                 .connect(
+        //                     (IpAddress::v4(10, 5, 2, 1), 80),
+        //                     (IpAddress::Unspecified, 65000),
+        //                 )
+        //                 .unwrap();
+        //             println!("after connect");
+        //             did_connect = true;
+        //         }
+        //     }
 
-            if socket.can_send() {
-                println!("sending");
-                socket.send_slice(b"0123456789abcdef").unwrap();
-                socket.close();
-            }
-        }
+        //     if socket.can_send() {
+        //         println!("sending");
+        //         socket.send_slice(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+        //         println!("sent");
+        //         socket.close();
+        //     }
+        // }
 
         match iface.poll_delay(&socket_set, clock.elapsed()) {
-            Some(Duration { millis: 0 }) => {}
-            Some(delay) => {
-                println!("sleeping for {} ms", delay);
-                clock.advance(delay)
-            }
-            None => clock.advance(Duration::from_millis(1)),
+            Some(delay) => clock.advance(delay),
+            None => { /* cortex_m::asm::wfi() */ }
         }
     }
 }
