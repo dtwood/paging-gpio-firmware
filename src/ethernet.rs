@@ -567,6 +567,12 @@ pub struct Tm4cTxToken<'a> {
     emac0: &'a mut EMAC0,
 }
 
+impl<'a> Drop for Tm4cTxToken<'a> {
+    fn drop(&mut self) {
+        println!("dropping tx token");
+    }
+}
+
 impl<'a> TxToken for Tm4cTxToken<'a> {
     fn consume<R, F>(self, _timestamp: Instant, len: usize, f: F) -> smoltcp::Result<R>
     where
