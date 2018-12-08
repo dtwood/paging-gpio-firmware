@@ -467,7 +467,7 @@ dependencies = [
 [[package]]
 name = "tivaware-sys"
 version = "0.1.0"
-source = "git+https://github.com/dtwood/tivaware-sys#a51ae61239d9457a7efe56a3764f74e80e8df604"
+source = "git+https://github.com/dtwood/tivaware-sys#02b7b07495282900bc1f70d22a7f38e9c5f9601a"
 dependencies = [
  "bindgen 0.42.3 (registry+https://github.com/rust-lang/crates.io-index)",
  "cc 1.0.25 (registry+https://github.com/rust-lang/crates.io-index)",
