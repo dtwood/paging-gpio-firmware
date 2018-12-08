@@ -1,34 +1,38 @@
 #![no_std]
 #![no_main]
 
-use bare_metal::Nr;
+mod ethernet;
+
+use crate::ethernet::Tm4cEthernetDevice;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use cortex_m_rt::{entry, exception};
 use smoltcp::iface::{EthernetInterfaceBuilder, NeighborCache};
-use smoltcp::phy::{ChecksumCapabilities, Device, DeviceCapabilities, RxToken, TxToken};
 use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
-use smoltcp::time::{Duration, Instant};
+use smoltcp::time::Duration;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
-use tivaware_sys::*;
 use tm4c129x;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::SysctlExt;
 use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
-use vcell::VolatileCell;
 
+pub fn get_stdout() -> impl Write {
+    unsafe { SERIAL.as_mut().unwrap() }
+}
+
+#[macro_export]
 macro_rules! println {
     ($fmt:expr) => {
-        #[allow(unused_unsafe)]
-        unsafe {
-            let _ = writeln!(SERIAL.as_mut().unwrap(), $fmt);
+        {
+            use core::fmt::Write as _println_Write;
+            let _ = writeln!($crate::get_stdout(), $fmt);
         }
     };
     ($fmt:expr, $($arg:tt)*) => {
-        #[allow(unused_unsafe)]
-        unsafe {
-            let _ = writeln!(SERIAL.as_mut().unwrap(), $fmt, $($arg)*);
+        {
+            use core::fmt::Write as _println_Write;
+            let _ = writeln!($crate::get_stdout(), $fmt, $($arg)*);
         }
     }
 }
@@ -72,296 +76,6 @@ static mut SERIAL: Option<
     >,
 > = None;
 
-struct Tm4cEthernetDevice {
-    tx_index: usize,
-    rx_index: usize,
-}
-
-impl Tm4cEthernetDevice {
-    fn new(
-        lock: &tm4c129x_hal::sysctl::PowerControl,
-        clocks: tm4c129x_hal::sysctl::Clocks,
-    ) -> Tm4cEthernetDevice {
-        unsafe {
-            let emac0_base: u32 = tm4c129x::EMAC0::ptr() as u32;
-
-            tm4c129x_hal::sysctl::control_power(
-                lock,
-                tm4c129x_hal::sysctl::Domain::Emac0,
-                tm4c129x_hal::sysctl::RunMode::Run,
-                tm4c129x_hal::sysctl::PowerState::On,
-            );
-            tm4c129x_hal::sysctl::control_power(
-                lock,
-                tm4c129x_hal::sysctl::Domain::Ephy0,
-                tm4c129x_hal::sysctl::RunMode::Run,
-                tm4c129x_hal::sysctl::PowerState::On,
-            );
-            tm4c129x_hal::sysctl::reset(lock, tm4c129x_hal::sysctl::Domain::Emac0);
-            tm4c129x_hal::sysctl::reset(lock, tm4c129x_hal::sysctl::Domain::Ephy0);
-
-            EMACReset(emac0_base);
-
-            EMACPHYConfigSet(
-                emac0_base,
-                EMAC_PHY_TYPE_INTERNAL | EMAC_PHY_INT_MDIX_EN | EMAC_PHY_AN_100B_T_FULL_DUPLEX,
-            );
-
-            EMACInit(
-                emac0_base,
-                clocks.sysclk.0,
-                EMAC_BCONFIG_MIXED_BURST | EMAC_BCONFIG_PRIORITY_FIXED,
-                4,
-                4,
-                1,
-            );
-
-            EMACConfigSet(
-                emac0_base,
-                EMAC_CONFIG_FULL_DUPLEX
-                    | EMAC_CONFIG_CHECKSUM_OFFLOAD
-                    | EMAC_CONFIG_7BYTE_PREAMBLE
-                    | EMAC_CONFIG_IF_GAP_96BITS
-                    | EMAC_CONFIG_USE_MACADDR0
-                    | EMAC_CONFIG_SA_FROM_DESCRIPTOR
-                    | EMAC_CONFIG_BO_LIMIT_1024,
-                EMAC_MODE_RX_STORE_FORWARD
-                    | EMAC_MODE_TX_STORE_FORWARD
-                    | EMAC_MODE_TX_THRESHOLD_64_BYTES
-                    | EMAC_MODE_RX_THRESHOLD_64_BYTES,
-                0,
-            );
-
-            for i in 0..NUM_TX_DESCRIPTORS {
-                TX_DESCRIPTORS[i].buffer_len = DES1_TX_CTRL_SADDR_INSERT;
-                TX_DESCRIPTORS[i].link_or_buffer_ext.link = if i == NUM_TX_DESCRIPTORS - 1 {
-                    &mut TX_DESCRIPTORS[0] as *mut _
-                } else {
-                    &mut TX_DESCRIPTORS[i + 1] as *mut _
-                };
-                TX_DESCRIPTORS[i].ctrl_status.set(
-                    DES0_TX_CTRL_LAST_SEG
-                        | DES0_TX_CTRL_FIRST_SEG
-                        | DES0_TX_CTRL_INTERRUPT
-                        | DES0_TX_CTRL_CHAINED
-                        | DES0_TX_CTRL_IP_ALL_CKHSUMS,
-                );
-            }
-
-            for i in 0..NUM_RX_DESCRIPTORS {
-                RX_DESCRIPTORS[i].ctrl_status.set(DES0_RX_CTRL_OWN);
-                RX_DESCRIPTORS[i].buffer_len =
-                    DES1_RX_CTRL_CHAINED | ((RX_BUFFER_SIZE as u32) << DES1_RX_CTRL_BUFF1_SIZE_S);
-                RX_DESCRIPTORS[i].buffer = &mut RX_BUFFERS[i][0] as *mut u8 as *mut _;
-                RX_DESCRIPTORS[i].link_or_buffer_ext.link = if i == (NUM_RX_DESCRIPTORS - 1) {
-                    &mut RX_DESCRIPTORS[0] as *mut _
-                } else {
-                    &mut RX_DESCRIPTORS[i + 1] as *mut _
-                };
-            }
-
-            EMACRxDMADescriptorListSet(emac0_base, &mut RX_DESCRIPTORS as *mut _ as *mut _);
-            EMACTxDMADescriptorListSet(emac0_base, &mut TX_DESCRIPTORS as *mut _ as *mut _);
-
-            EMACAddrSet(
-                emac0_base,
-                0,
-                &[0x00u8, 0x1A, 0xB6, 0x00, 0x02, 0x74] as *const _,
-            );
-
-            while EMACPHYRead(emac0_base, 0, EPHY_BMSR as u8) as u32 & EPHY_BMSR_LINKSTAT == 0 {
-                cortex_m::asm::nop();
-            }
-
-            EMACFrameFilterSet(
-                emac0_base,
-                EMAC_FRMFILTER_RX_ALL | EMAC_FRMFILTER_PROMISCUOUS,
-            );
-
-            EMACIntClear(emac0_base, EMACIntStatus(emac0_base, false));
-            EMACTxEnable(emac0_base);
-            EMACRxEnable(emac0_base);
-            IntEnable(tm4c129x::Interrupt::EMAC0.nr() as u32 + 16);
-        }
-
-        Tm4cEthernetDevice {
-            rx_index: 0,
-            tx_index: 0,
-        }
-    }
-}
-
-impl<'a> Device<'a> for Tm4cEthernetDevice {
-    type RxToken = Tm4cRxToken<'a>;
-    type TxToken = Tm4cTxToken<'a>;
-
-    fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
-        // Make sure that we own the receive descriptor.
-        unsafe {
-            if RX_DESCRIPTORS[self.rx_index].ctrl_status.get() & DES0_RX_CTRL_OWN
-                == DES0_RX_CTRL_OWN
-            {
-                return None;
-            }
-
-            if TX_DESCRIPTORS[self.tx_index].ctrl_status.get() & DES0_TX_CTRL_OWN
-                == DES0_TX_CTRL_OWN
-            {
-                println!("receive no tx buffers");
-                return None;
-            }
-        }
-
-        println!("receive got both buffers");
-        let result = Some((
-            Tm4cRxToken {
-                descriptor: unsafe { &mut RX_DESCRIPTORS[self.rx_index] },
-            },
-            Tm4cTxToken {
-                descriptor: unsafe { &mut TX_DESCRIPTORS[self.tx_index] },
-            },
-        ));
-
-        self.tx_index += 1;
-        if self.tx_index == NUM_TX_DESCRIPTORS {
-            self.tx_index = 0;
-        }
-
-        self.rx_index += 1;
-        if self.rx_index == NUM_RX_DESCRIPTORS {
-            self.rx_index = 0;
-        }
-
-        result
-    }
-
-    fn transmit(&'a mut self) -> Option<(Self::TxToken)> {
-        println!("transmit");
-
-        unsafe {
-            if TX_DESCRIPTORS[self.tx_index].ctrl_status.get() & DES0_TX_CTRL_OWN
-                == DES0_TX_CTRL_OWN
-            {
-                println!("tx no buffer");
-                return None;
-            }
-        }
-
-        let result = Some(Tm4cTxToken {
-            descriptor: unsafe { &mut TX_DESCRIPTORS[self.tx_index] },
-        });
-
-        self.tx_index += 1;
-        if self.tx_index == NUM_TX_DESCRIPTORS {
-            self.tx_index = 0;
-        }
-
-        println!("tx returning");
-
-        result
-    }
-
-    fn capabilities(&self) -> DeviceCapabilities {
-        let mut cap = DeviceCapabilities::default();
-
-        cap.max_transmission_unit = RX_BUFFER_SIZE;
-        cap.max_burst_size = Some(1);
-        cap.checksum = ChecksumCapabilities::ignored();
-
-        cap
-    }
-}
-
-struct Tm4cRxToken<'a> {
-    descriptor: &'a mut emac_descriptor,
-}
-
-impl<'a> RxToken for Tm4cRxToken<'a> {
-    fn consume<R, F>(self, _timestamp: Instant, f: F) -> smoltcp::Result<R>
-    where
-        F: FnOnce(&[u8]) -> smoltcp::Result<R>,
-    {
-        println!("rx start consume");
-        let result;
-
-        unsafe {
-            // We own the receive descriptor so check to see if it contains a valid frame.
-            if self.descriptor.ctrl_status.get() & DES0_RX_STAT_ERR != DES0_RX_STAT_ERR {
-                // We have a valid frame. First check that the "last descriptor" flag is set. We
-                // sized the receive buffer such that it can always hold a valid frame so this
-                // flag should never be clear at this point but...
-                if self.descriptor.ctrl_status.get() & DES0_RX_STAT_LAST_DESC
-                    == DES0_RX_STAT_LAST_DESC
-                {
-                    // What size is the received frame?
-                    let frame_len = (self.descriptor.ctrl_status.get()
-                        & DES0_RX_STAT_FRAME_LENGTH_M)
-                        >> DES0_RX_STAT_FRAME_LENGTH_S;
-                    let data = core::slice::from_raw_parts(
-                        self.descriptor.buffer as *mut u8,
-                        frame_len as usize,
-                    );
-                    println!("RX: {:?}", data);
-                    result = f(data);
-                    println!("rx processed");
-                } else {
-                    println!("rx truncated");
-                    result = Err(smoltcp::Error::Truncated);
-                }
-            } else {
-                println!("rx checksum");
-                result = Err(smoltcp::Error::Checksum);
-            }
-            self.descriptor.ctrl_status.set(DES0_RX_CTRL_OWN);
-        }
-        println!("rx end consume");
-
-        result
-    }
-}
-
-struct Tm4cTxToken<'a> {
-    descriptor: &'a mut emac_descriptor,
-}
-
-impl<'a> TxToken for Tm4cTxToken<'a> {
-    fn consume<R, F>(self, _timestamp: Instant, len: usize, f: F) -> smoltcp::Result<R>
-    where
-        F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
-    {
-        println!("tx start consume");
-        let emac0_base: u32 = tm4c129x::EMAC0::ptr() as u32;
-        let result;
-
-        assert!(len <= RX_BUFFER_SIZE);
-
-        unsafe {
-            let mut data: [u8; RX_BUFFER_SIZE] = core::mem::uninitialized();
-            result = f(&mut data);
-
-            // Fill in the packet size and pointer, and tell the transmitter to start work.
-            self.descriptor.buffer_len = len as u32;
-            self.descriptor.buffer = &mut data as *mut _ as *mut _;
-            self.descriptor.ctrl_status.set(
-                DES0_TX_CTRL_LAST_SEG
-                    | DES0_TX_CTRL_FIRST_SEG
-                    | DES0_TX_CTRL_INTERRUPT
-                    | DES0_TX_CTRL_CHAINED
-                    | DES0_TX_CTRL_OWN,
-            );
-
-            // Tell the DMA to reacquire the descriptor now that we've filled it in. This
-            // call is benign if the transmitter hasn't stalled and checking the state takes
-            // longer than just issuing a poll demand so we do this for all packets.
-            EMACTxDMAPollDemand(emac0_base);
-        }
-
-        println!("tx end consume");
-
-        result
-    }
-}
-
 mod mock {
     use core::cell::Cell;
     use smoltcp::time::{Duration, Instant};
@@ -384,53 +98,10 @@ mod mock {
     }
 }
 
-#[repr(C)]
-union emac_des3 {
-    link: *mut emac_descriptor,
-    buffer_ext: *mut u8,
-}
-
-#[repr(C)]
-struct emac_descriptor {
-    ctrl_status: VolatileCell<u32>,
-    buffer_len: u32,
-    buffer: *mut u8,
-    link_or_buffer_ext: emac_des3,
-    ext_rx_status: u32,
-    reserved: u32,
-    ieee_1588_time_lo: u32,
-    ieee_1588_time_hi: u32,
-}
-
-const fn d() -> emac_descriptor {
-    emac_descriptor {
-        ctrl_status: VolatileCell::new(0),
-        buffer_len: 0,
-        buffer: core::ptr::null_mut(),
-        link_or_buffer_ext: emac_des3 {
-            link: core::ptr::null_mut(),
-        },
-        ext_rx_status: 0,
-        reserved: 0,
-        ieee_1588_time_lo: 0,
-        ieee_1588_time_hi: 0,
-    }
-}
-
-const NUM_TX_DESCRIPTORS: usize = 10;
-const NUM_RX_DESCRIPTORS: usize = 10;
-static mut RX_DESCRIPTORS: [emac_descriptor; NUM_TX_DESCRIPTORS] =
-    [d(), d(), d(), d(), d(), d(), d(), d(), d(), d()];
-static mut TX_DESCRIPTORS: [emac_descriptor; NUM_RX_DESCRIPTORS] =
-    [d(), d(), d(), d(), d(), d(), d(), d(), d(), d()];
-
-const RX_BUFFER_SIZE: usize = 1536;
-static mut RX_BUFFERS: [[u8; RX_BUFFER_SIZE]; NUM_RX_DESCRIPTORS] =
-    [[0; RX_BUFFER_SIZE]; NUM_RX_DESCRIPTORS];
-
 #[entry]
 fn main() -> ! {
     let p = tm4c129x_hal::Peripherals::take().unwrap();
+    let mut core_p = tm4c129x_hal::CorePeripherals::take().unwrap();
     let sc = p.SYSCTL.constrain();
     let mut porta = p.GPIO_PORTA_AHB.split(&sc.power_control);
     let portf = p.GPIO_PORTF_AHB.split(&sc.power_control);
@@ -489,7 +160,7 @@ fn main() -> ! {
     }
 
     let clock = mock::Clock::new();
-    let device = Tm4cEthernetDevice::new(&sc.power_control, clocks);
+    let device = Tm4cEthernetDevice::new(&sc.power_control, clocks, &mut core_p.NVIC, p.EMAC0);
     let mut neighbor_cache_entries = [None; 8];
     let neighbor_cache = NeighborCache::new(&mut neighbor_cache_entries[..]);
 
