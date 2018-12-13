@@ -1,9 +1,6 @@
 #![no_std]
 #![no_main]
 
-mod ethernet;
-
-use crate::ethernet::Tm4cEthernetDevice;
 use core::fmt::Write;
 use core::panic::PanicInfo;
 use cortex_m_rt::{entry, exception};
@@ -13,6 +10,7 @@ use smoltcp::socket::SocketSet;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
 use tm4c129x;
+use tm4c129x_hal::ethernet::EthernetDevice;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::Clocks;
@@ -182,8 +180,10 @@ fn main() -> ! {
         led.set_low();
     }
 
+    let ephy = tm4c129x_hal::ephy::Peripherals::take().unwrap().EPHY.0;
+
     let mut clock = Clock::new(core_p.SYST, clocks);
-    let device = Tm4cEthernetDevice::new(&sc.power_control, clocks, &mut core_p.NVIC, p.EMAC0);
+    let device = EthernetDevice::new(&sc.power_control, clocks, &mut core_p.NVIC, p.EMAC0, ephy);
     let mut neighbor_cache_entries = [None; 8];
     let neighbor_cache = NeighborCache::new(&mut neighbor_cache_entries[..]);
 
