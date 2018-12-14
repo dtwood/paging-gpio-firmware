@@ -5,8 +5,7 @@ use core::fmt::Write;
 use core::panic::PanicInfo;
 use cortex_m_rt::{entry, exception};
 use smoltcp::iface::{EthernetInterfaceBuilder, NeighborCache};
-use smoltcp::socket::SocketSet;
-// use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
+use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
 use tm4c129x;
@@ -198,77 +197,83 @@ fn main() -> ! {
     // on embedded systems that smoltcp targets it is far better to allocate the
     // data statically to verify that it fits into RAM rather than get
     // undefined behavior when stack overflows.
-    // let server_socket = TcpSocket::new(
-    //     TcpSocketBuffer::new(unsafe {
-    //         static mut TCP_SERVER_RX_DATA: [u8; 1024] = [0; 1024];
-    //         &mut TCP_SERVER_RX_DATA[..]
-    //     }),
-    //     TcpSocketBuffer::new(unsafe {
-    //         static mut TCP_SERVER_TX_DATA: [u8; 1024] = [0; 1024];
-    //         &mut TCP_SERVER_TX_DATA[..]
-    //     }),
-    // );
-    // let client_socket = TcpSocket::new(
-    //     TcpSocketBuffer::new(unsafe {
-    //         static mut TCP_CLIENT_RX_DATA: [u8; 1024] = [0; 1024];
-    //         &mut TCP_CLIENT_RX_DATA[..]
-    //     }),
-    //     TcpSocketBuffer::new(unsafe {
-    //         static mut TCP_CLIENT_TX_DATA: [u8; 1024] = [0; 1024];
-    //         &mut TCP_CLIENT_TX_DATA[..]
-    //     }),
-    // );
+    let server_socket = TcpSocket::new(
+        TcpSocketBuffer::new(unsafe {
+            static mut TCP_SERVER_RX_DATA: [u8; 1024] = [0; 1024];
+            &mut TCP_SERVER_RX_DATA[..]
+        }),
+        TcpSocketBuffer::new(unsafe {
+            static mut TCP_SERVER_TX_DATA: [u8; 1024] = [0; 1024];
+            &mut TCP_SERVER_TX_DATA[..]
+        }),
+    );
+    let client_socket = TcpSocket::new(
+        TcpSocketBuffer::new(unsafe {
+            static mut TCP_CLIENT_RX_DATA: [u8; 1024] = [0; 1024];
+            &mut TCP_CLIENT_RX_DATA[..]
+        }),
+        TcpSocketBuffer::new(unsafe {
+            static mut TCP_CLIENT_TX_DATA: [u8; 1024] = [0; 1024];
+            &mut TCP_CLIENT_TX_DATA[..]
+        }),
+    );
 
     let mut socket_set_entries: [_; 2] = Default::default();
     let mut socket_set = SocketSet::new(&mut socket_set_entries[..]);
-    // let server_handle = socket_set.add(server_socket);
-    // let client_handle = socket_set.add(client_socket);
+    let server_handle = socket_set.add(server_socket);
+    let client_handle = socket_set.add(client_socket);
 
-    // let mut did_listen = false;
-    // let mut did_connect = false;
+    let mut did_listen = false;
+    let mut did_connect = false;
 
     loop {
         while iface.poll(&mut socket_set, clock.elapsed()).is_err() {}
 
-        // {
-        //     let mut socket = socket_set.get::<TcpSocket>(server_handle);
-        //     if !socket.is_active() && !socket.is_listening() {
-        //         if !did_listen {
-        //             println!("listening");
-        //             socket.listen(65000).unwrap();
-        //             did_listen = true;
-        //         }
-        //     }
+        {
+            let mut socket = socket_set.get::<TcpSocket>(server_handle);
+            if !socket.is_active() && !socket.is_listening() {
+                if !did_listen {
+                    println!("listening");
+                    socket.listen(7).unwrap();
+                    did_listen = true;
+                }
+            }
 
-        //     if socket.can_recv() {
-        //         println!("can rx");
-        //         println!("got {:?}", socket.recv(|buffer| (buffer.len(), buffer)));
-        //     }
-        // }
+            if socket.can_send() {
+                let mut data: [u8; 256] = [0; 256];
+                match socket.recv_slice(&mut data) {
+                    Ok(count) => {
+                        println!("got {:?}", &data[..]);
+                        socket.send_slice(&data[0..count]).unwrap();
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
 
-        // {
-        //     let mut socket = socket_set.get::<TcpSocket>(client_handle);
-        //     if !socket.is_open() {
-        //         if !did_connect {
-        //             println!("connecting");
-        //             socket
-        //                 .connect(
-        //                     (IpAddress::v4(10, 5, 2, 1), 80),
-        //                     (IpAddress::Unspecified, 65000),
-        //                 )
-        //                 .unwrap();
-        //             println!("after connect");
-        //             did_connect = true;
-        //         }
-        //     }
+        {
+            let mut socket = socket_set.get::<TcpSocket>(client_handle);
+            if !socket.is_open() {
+                if !did_connect {
+                    socket
+                        .connect(
+                            (IpAddress::v4(10, 5, 2, 1), 80),
+                            (IpAddress::Unspecified, 65000),
+                        )
+                        .unwrap();
+                    did_connect = true;
+                }
+            }
 
-        //     if socket.can_send() {
-        //         println!("sending");
-        //         socket.send_slice(b"GET / HTTP/1.1\r\n\r\n").unwrap();
-        //         println!("sent");
-        //         socket.close();
-        //     }
-        // }
+            if socket.can_send() {
+                socket.send_slice(b"GET / HTTP/1.1\r\n\r\n").unwrap();
+                socket.close();
+            }
+
+            if socket.can_recv() {
+                println!("got {:?}", socket.recv(|buffer| (buffer.len(), buffer)));
+            }
+        }
 
         match iface.poll_delay(&socket_set, clock.elapsed()) {
             Some(delay) => clock.advance(delay),
