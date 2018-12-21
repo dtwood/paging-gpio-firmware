@@ -56,6 +56,18 @@ fn DefaultHandler(irqn: i16) {
     panic!("IRQ: {}", irqn);
 }
 
+tm4c129x::interrupt!(EMAC0, emac0);
+fn emac0() {
+    unsafe {
+        let emac0 = tm4c129x::Peripherals::steal().EMAC0;
+        emac0.dmaris.write(|w| w.bits(0xffff_ffff));
+        emac0.ephymisc.write(|w| w.int().set_bit());
+    }
+}
+
+#[exception]
+fn SysTick() {}
+
 static mut SERIAL: Option<
     tm4c129x_hal::serial::Serial<
         tm4c129x::UART0,
@@ -98,19 +110,22 @@ impl Clock {
     }
 
     pub fn advance(&mut self, duration: Duration) {
-        let mut reload = ((self.ticks_per_10ms * duration.total_millis()) / 10) as u32;
-
-        while reload > 0 {
-            self.systick.set_reload(reload & 0x00ffffff);
-            reload -= cortex_m::peripheral::SYST::get_reload();
-            self.systick.clear_current();
-
-            self.systick.enable_counter();
-            while !self.systick.has_wrapped() {}
-            self.systick.disable_counter();
+        let reload = (self.ticks_per_10ms * duration.total_millis()) / 10;
+        if reload == 0 {
+            return;
         }
 
-        self.instant += duration;
+        let this_sleep = core::cmp::min(reload, 0x00ffffff) as u32;
+
+        self.systick.set_reload(this_sleep);
+        self.systick.clear_current();
+
+        self.systick.enable_interrupt();
+        self.systick.enable_counter();
+        cortex_m::asm::wfe();
+        self.systick.disable_counter();
+
+        self.instant += Duration::from_millis((this_sleep as u64 * 10) / self.ticks_per_10ms);
     }
 
     pub fn elapsed(&mut self) -> Instant {
@@ -275,9 +290,9 @@ fn main() -> ! {
             }
         }
 
-        match iface.poll_delay(&socket_set, clock.elapsed()) {
-            Some(delay) => clock.advance(delay),
-            None => { /* cortex_m::asm::wfi() */ }
-        }
+        let delay = iface
+            .poll_delay(&socket_set, clock.elapsed())
+            .unwrap_or(Duration::from_millis(0xffff_ffff_ffff_ffff));
+        clock.advance(delay);
     }
 }
