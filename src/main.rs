@@ -257,8 +257,8 @@ fn main() -> ! {
             if socket.can_send() {
                 let mut data: [u8; 256] = [0; 256];
                 match socket.recv_slice(&mut data) {
+                    Ok(0) => {}
                     Ok(count) => {
-                        println!("got {:?}", &data[..]);
                         socket.send_slice(&data[0..count]).unwrap();
                     }
                     Err(_) => {}
