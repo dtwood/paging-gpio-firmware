@@ -41,28 +41,28 @@ name = "cortex-m-rt"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "cortex-m-rt 0.6.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cortex-m-rt 0.6.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "r0 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "cortex-m-rt"
-version = "0.6.6"
+version = "0.6.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
- "cortex-m-rt-macros 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cortex-m-rt-macros 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "r0 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
 name = "cortex-m-rt-macros"
-version = "0.1.4"
+version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "proc-macro2 0.4.24 (registry+https://github.com/rust-lang/crates.io-index)",
  "quote 0.6.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "rand 0.5.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "syn 0.15.22 (registry+https://github.com/rust-lang/crates.io-index)",
+ "syn 0.15.23 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -163,7 +163,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "smoltcp"
 version = "0.5.0"
-source = "git+https://github.com/m-labs/smoltcp#246b8a2cefac67c02504fc0d202ed35b1fe3a3c6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "bitflags 1.0.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "byteorder 1.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "0.15.22"
+version = "0.15.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 dependencies = [
  "proc-macro2 0.4.24 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -185,11 +185,11 @@ name = "tiva-demo"
 version = "0.1.0"
 dependencies = [
  "cortex-m 0.5.8 (registry+https://github.com/rust-lang/crates.io-index)",
- "cortex-m-rt 0.6.6 (registry+https://github.com/rust-lang/crates.io-index)",
+ "cortex-m-rt 0.6.7 (registry+https://github.com/rust-lang/crates.io-index)",
  "cortex-m-semihosting 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cty 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "embedded-hal 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
- "smoltcp 0.5.0 (git+https://github.com/m-labs/smoltcp)",
+ "smoltcp 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tm4c129x 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tm4c129x-hal 0.7.0 (git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft)",
 ]
@@ -197,7 +197,7 @@ dependencies = [
 [[package]]
 name = "tm4c-hal"
 version = "0.1.0"
-source = "git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft#439913146d6ff07942f07db6525283e4240a9248"
+source = "git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft#282ea0cb180aa8dfb93391c8e86dd25826ae7a7a"
 dependencies = [
  "cast 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "cortex-m 0.5.8 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -218,7 +218,7 @@ dependencies = [
 [[package]]
 name = "tm4c129x-hal"
 version = "0.7.0"
-source = "git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft#439913146d6ff07942f07db6525283e4240a9248"
+source = "git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft#282ea0cb180aa8dfb93391c8e86dd25826ae7a7a"
 dependencies = [
  "bare-metal 0.2.4 (registry+https://github.com/rust-lang/crates.io-index)",
  "byteorder 1.2.7 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -226,7 +226,7 @@ dependencies = [
  "cortex-m 0.5.8 (registry+https://github.com/rust-lang/crates.io-index)",
  "embedded-hal 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "nb 0.1.1 (registry+https://github.com/rust-lang/crates.io-index)",
- "smoltcp 0.5.0 (git+https://github.com/m-labs/smoltcp)",
+ "smoltcp 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "tm4c-hal 0.1.0 (git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft)",
  "tm4c129x 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "vcell 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -264,8 +264,8 @@ dependencies = [
 "checksum cast 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "926013f2860c46252efceabb19f4a6b308197505082c609025aa6706c011d427"
 "checksum cortex-m 0.5.8 (registry+https://github.com/rust-lang/crates.io-index)" = "dab2164a0fc216781a47fc343347365112ae6917421d3fa4bac6faf0fbaaaec7"
 "checksum cortex-m-rt 0.5.7 (registry+https://github.com/rust-lang/crates.io-index)" = "09fd585ab79330179866e2fdb18ad1083dada4244a72df81ecf63f012aa4f86f"
-"checksum cortex-m-rt 0.6.6 (registry+https://github.com/rust-lang/crates.io-index)" = "bc046658f47b647e264e30aac150f7546ab52ac293cdee8ab153f95abb3630e3"
-"checksum cortex-m-rt-macros 0.1.4 (registry+https://github.com/rust-lang/crates.io-index)" = "a6c794cb1efa87e9a1f31fe6ac5d620f7d08f4e001d7d697ccfdb788c20c330c"
+"checksum cortex-m-rt 0.6.7 (registry+https://github.com/rust-lang/crates.io-index)" = "f69d2beca37acc3776c17201c9d1f8904fb9139fa3a4d2cf28c8436a07b21a88"
+"checksum cortex-m-rt-macros 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "d7ae692573e0acccb1579fef1abf5a5bf1d2f3f0149a22b16870ec9309aee25f"
 "checksum cortex-m-semihosting 0.3.2 (registry+https://github.com/rust-lang/crates.io-index)" = "d1dc2abec1a772e8bb697cad17d5710f180043caf8939820f0f6ba4b7ae2a4b5"
 "checksum cty 0.1.5 (registry+https://github.com/rust-lang/crates.io-index)" = "c4e1d41c471573612df00397113557693b5bf5909666a8acb253930612b93312"
 "checksum embedded-hal 0.2.2 (registry+https://github.com/rust-lang/crates.io-index)" = "9880e55238830314d41d88f1ac7a819d495799c3cc3bc392cc172bab26428c33"
@@ -280,8 +280,8 @@ dependencies = [
 "checksum rustc_version 0.2.3 (registry+https://github.com/rust-lang/crates.io-index)" = "138e3e0acb6c9fb258b19b67cb8abd63c00679d2851805ea151465464fe9030a"
 "checksum semver 0.9.0 (registry+https://github.com/rust-lang/crates.io-index)" = "1d7eb9ef2c18661902cc47e535f9bc51b78acd254da71d375c2f6720d9a40403"
 "checksum semver-parser 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)" = "388a1df253eca08550bef6c72392cfe7c30914bf41df5269b68cbd6ff8f570a3"
-"checksum smoltcp 0.5.0 (git+https://github.com/m-labs/smoltcp)" = "<none>"
-"checksum syn 0.15.22 (registry+https://github.com/rust-lang/crates.io-index)" = "ae8b29eb5210bc5cf63ed6149cbf9adfc82ac0be023d8735c176ee74a2db4da7"
+"checksum smoltcp 0.5.0 (registry+https://github.com/rust-lang/crates.io-index)" = "fef582369edb298c6c41319a544ca9c4e83622f226055ccfcb35974fbb55ed34"
+"checksum syn 0.15.23 (registry+https://github.com/rust-lang/crates.io-index)" = "9545a6a093a3f0bd59adb472700acc08cad3776f860f16a897dfce8c88721cbc"
 "checksum tm4c-hal 0.1.0 (git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft)" = "<none>"
 "checksum tm4c129x 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)" = "909a3b55eff7680417067cd499774eb674a20141f28553a234732660b8133e62"
 "checksum tm4c129x-hal 0.7.0 (git+https://github.com/dtwood/tm4c-hal?branch=ethernet-draft)" = "<none>"
