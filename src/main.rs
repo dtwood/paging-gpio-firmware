@@ -1,8 +1,10 @@
 #![no_std]
 #![no_main]
 
+use core::cmp::min;
 use core::fmt::Write;
 use core::panic::PanicInfo;
+use cortex_m::peripheral::SYST;
 use cortex_m_rt::{entry, exception};
 use smoltcp::iface::{EthernetInterfaceBuilder, NeighborCache};
 use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
@@ -16,7 +18,6 @@ use tm4c129x_hal::sysctl::Clocks;
 use tm4c129x_hal::sysctl::SysctlExt;
 use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
 
-#[no_mangle]
 pub fn get_stdout() -> impl Write {
     unsafe { SERIAL.as_mut().unwrap() }
 }
@@ -35,6 +36,28 @@ macro_rules! println {
             let _ = writeln!($crate::get_stdout(), $fmt, $($arg)*);
         }
     }
+}
+
+macro_rules! dbg {
+    () => {
+        println!("[{}:{}]", file!(), line!());
+    };
+    ($val:expr) => {
+        // Use of `match` here is intentional because it affects the lifetimes
+        // of temporaries - https://stackoverflow.com/a/48732525/1063961
+        match $val {
+            tmp => {
+                println!(
+                    "[{}:{}] {} = {:?}",
+                    file!(),
+                    line!(),
+                    stringify!($val),
+                    &tmp
+                );
+                tmp
+            }
+        }
+    };
 }
 
 #[panic_handler]
@@ -56,17 +79,27 @@ fn DefaultHandler(irqn: i16) {
     panic!("IRQ: {}", irqn);
 }
 
+static mut ETHERNET_FIRED: bool = false;
+
 tm4c129x::interrupt!(EMAC0, emac0);
 fn emac0() {
     unsafe {
         let emac0 = tm4c129x::Peripherals::steal().EMAC0;
         emac0.dmaris.write(|w| w.bits(0xffff_ffff));
         emac0.ephymisc.write(|w| w.int().set_bit());
+
+        ETHERNET_FIRED = true;
     }
 }
 
+static mut ELAPSED_TIME: Instant = Instant { millis: 0 };
+
 #[exception]
-fn SysTick() {}
+fn SysTick() {
+    unsafe {
+        ELAPSED_TIME += Duration::from_millis(10);
+    }
+}
 
 static mut SERIAL: Option<
     tm4c129x_hal::serial::Serial<
@@ -89,52 +122,52 @@ static mut SERIAL: Option<
 > = None;
 
 pub struct Clock {
+    ticks_per_10ms: u32,
     systick: tm4c129x::SYST,
-    ticks_per_10ms: u64,
-    instant: Instant,
 }
 
 impl Clock {
     pub fn new(mut systick: tm4c129x::SYST, _clocks: Clocks) -> Clock {
-        systick.set_reload(100);
-        systick.clear_current();
+        let ticks_per_10ms = SYST::get_ticks_per_10ms().into();
 
-        let ticks_per_10ms = cortex_m::peripheral::SYST::get_ticks_per_10ms().into();
-        assert!(ticks_per_10ms != 0);
+        assert!(0 < ticks_per_10ms && ticks_per_10ms < 0x00ffffff);
+        dbg!(SYST::is_precise());
+
+        systick.set_reload(ticks_per_10ms - 1);
+        systick.clear_current();
+        systick.enable_interrupt();
+        systick.enable_counter();
 
         Clock {
-            systick,
             ticks_per_10ms,
-            instant: Instant::from_millis(0),
+            systick,
         }
-    }
-
-    pub fn advance(&mut self, duration: Duration) {
-        let reload = (self.ticks_per_10ms * duration.total_millis()) / 10;
-        if reload == 0 {
-            return;
-        }
-
-        let this_sleep = core::cmp::min(reload, 0x00ffffff) as u32;
-
-        self.systick.set_reload(this_sleep);
-        self.systick.clear_current();
-
-        self.systick.enable_interrupt();
-        self.systick.enable_counter();
-        cortex_m::asm::wfe();
-        self.systick.disable_counter();
-
-        self.instant += Duration::from_millis((this_sleep as u64 * 10) / self.ticks_per_10ms);
     }
 
     pub fn elapsed(&mut self) -> Instant {
-        self.instant
+        self.systick.has_wrapped();
+
+        loop {
+            let res = unsafe { ELAPSED_TIME }
+                + Duration::from_millis(
+                    ((self.ticks_per_10ms - SYST::get_current()) as u64 * 10)
+                        / self.ticks_per_10ms as u64,
+                );
+            if !self.systick.has_wrapped() {
+                return res;
+            }
+        }
     }
 }
 
 #[entry]
 fn main() -> ! {
+    unsafe {
+        core::ptr::write_volatile(
+            0xE000ED24 as *mut u32,
+            core::ptr::read_volatile(0xE000ED24 as *mut u32) | (1 << 18 | 1 << 17 | 1 << 16),
+        );
+    }
     let p = tm4c129x_hal::Peripherals::take().unwrap();
     let mut core_p = tm4c129x_hal::CorePeripherals::take().unwrap();
     let sc = p.SYSCTL.constrain();
@@ -241,6 +274,9 @@ fn main() -> ! {
     let mut did_listen = false;
     let mut did_connect = false;
 
+    let mut i = 0;
+    let mut start_at = None;
+
     loop {
         while iface.poll(&mut socket_set, clock.elapsed()).is_err() {}
 
@@ -249,19 +285,8 @@ fn main() -> ! {
             if !socket.is_active() && !socket.is_listening() {
                 if !did_listen {
                     println!("listening");
-                    socket.listen(7).unwrap();
+                    socket.listen(65000).unwrap();
                     did_listen = true;
-                }
-            }
-
-            if socket.can_send() {
-                let mut data: [u8; 256] = [0; 256];
-                match socket.recv_slice(&mut data) {
-                    Ok(0) => {}
-                    Ok(count) => {
-                        socket.send_slice(&data[0..count]).unwrap();
-                    }
-                    Err(_) => {}
                 }
             }
         }
@@ -272,7 +297,7 @@ fn main() -> ! {
                 if !did_connect {
                     socket
                         .connect(
-                            (IpAddress::v4(10, 5, 2, 1), 80),
+                            (IpAddress::v4(10, 5, 2, 1), 49280),
                             (IpAddress::Unspecified, 65000),
                         )
                         .unwrap();
@@ -281,8 +306,27 @@ fn main() -> ! {
             }
 
             if socket.can_send() {
-                socket.send_slice(b"GET / HTTP/1.1\r\n\r\n").unwrap();
-                socket.close();
+                match start_at {
+                    None => start_at = Some(clock.elapsed()),
+
+                    Some(start_at) => {
+                        let now = clock.elapsed();
+                        if now >= start_at + (Duration { millis: i * 1000 }) {
+                            if i % 2 == 0 {
+                                socket.send_slice(b"SET channel0 \"ON\"\r").unwrap();
+                                if i == 0 {
+                                    socket.send_slice(b"partial").unwrap();
+                                }
+                            } else {
+                                socket.send_slice(b"SET channel0 \"OFF\"\r").unwrap();
+                            }
+
+                            i += 1;
+                        }
+                    }
+                }
+            } else {
+                assert!(start_at.is_none());
             }
 
             if socket.can_recv() {
@@ -293,6 +337,23 @@ fn main() -> ! {
         let delay = iface
             .poll_delay(&socket_set, clock.elapsed())
             .unwrap_or(Duration::from_millis(0xffff_ffff_ffff_ffff));
-        clock.advance(delay);
+
+        let now = clock.elapsed();
+        let end_time = match start_at {
+            None => now + delay,
+            Some(start_at) => min(now + delay, start_at + Duration { millis: i * 1000 }),
+        };
+
+        unsafe { ETHERNET_FIRED = false };
+
+        if (end_time - clock.elapsed()).millis <= 10 {
+            while clock.elapsed() < end_time && !unsafe { ETHERNET_FIRED } {
+                cortex_m::asm::nop();
+            }
+        } else {
+            while clock.elapsed() < end_time && !unsafe { ETHERNET_FIRED } {
+                cortex_m::asm::wfe();
+            }
+        }
     }
 }
