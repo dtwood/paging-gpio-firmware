@@ -10,13 +10,13 @@ use smoltcp::iface::{EthernetInterfaceBuilder, NeighborCache};
 use smoltcp::socket::{SocketSet, TcpSocket, TcpSocketBuffer};
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
-use tm4c129x;
 use tm4c129x_hal::ethernet::EthernetDevice;
 use tm4c129x_hal::gpio;
 use tm4c129x_hal::prelude::*;
 use tm4c129x_hal::sysctl::Clocks;
 use tm4c129x_hal::sysctl::SysctlExt;
 use tm4c129x_hal::sysctl::{CrystalFrequency, Oscillator, PllOutputFrequency, SystemClock};
+use tm4c129x_hal::tm4c129x;
 
 pub fn get_stdout() -> impl Write {
     unsafe { SERIAL.as_mut().unwrap() }
@@ -38,6 +38,7 @@ macro_rules! println {
     }
 }
 
+#[allow(unused_macros)]
 macro_rules! dbg {
     () => {
         println!("[{}:{}]", file!(), line!());
