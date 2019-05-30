@@ -4,11 +4,11 @@ import datetime
 import socket
 
 
-HOST = "10.5.2.1"  # Standard loopback interface address (localhost)
-PORT = 49280  # Port to listen on (non-privileged ports are > 1023)
+HOST = "2001:db8::1"
+PORT = 49280
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    s.bind((HOST, PORT))
+with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+    s.bind((HOST, PORT, 0, 0))
     print("bound")
     s.listen()
     print("listening")
@@ -36,5 +36,9 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 (*frames, buf) = buf.split(b"\r")
                 for frame in frames:
                     conn.send(b"ACK " + frame + b"\r")
-                    print(f"[{rx_time.isoformat(timespec='milliseconds')} ({delta})]: {frame}")
+                    print(
+                        "[{} ({})]: {}".format(
+                            rx_time.isoformat(), delta, frame
+                        )
+                    )
         print("disconnected")

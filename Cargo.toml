@@ -10,6 +10,10 @@ cortex-m = "0.5"
 cortex-m-rt = "0.6"
 embedded-hal = "0.2"
 
+[dependencies.cortex-m-rtfm]
+git = "https://github.com/japaric/cortex-m-rtfm"
+features = ["timer-queue"]
+
 [dependencies.smoltcp]
 version = "0.5"
 default_features = false
@@ -23,8 +27,7 @@ features = [
 
 [dependencies.tm4c129x-hal]
 features = ["rt"]
-git = "https://github.com/dtwood/tm4c-hal"
-branch = "ethernet-draft"
+path = "../../tiva-demo/tm4c-hal/tm4c129x-hal"
 
 # this lets you use `cargo fix`!
 [[bin]]
@@ -36,3 +39,6 @@ bench = false
 codegen-units = 1 # better optimizations
 debug = true # symbols are nice and they don't increase the size on Flash
 lto = true # better optimizations
+
+[patch.crates-io]
+tm4c129x = { path = "../dslite2svd/crates/tm4c129x" }
