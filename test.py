@@ -4,20 +4,22 @@ import datetime
 import socket
 
 
-HOST = "2001:db8::1"
-PORT = 49280
+HOST = "localhost"
+PORT = 49281
 
-with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
-    s.bind((HOST, PORT, 0, 0))
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    s.bind((HOST, PORT))
     print("bound")
     s.listen()
-    print("listening")
+    print(f"listening on {HOST}:{PORT}")
     while True:
         conn, addr = s.accept()
         with conn:
             print("Connected by", addr)
             buf = b""
             old_rx_time = None
+            old_time = 0
+            times = []
             while True:
                 try:
                     data = conn.recv(1024)
@@ -35,10 +37,13 @@ with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
                 buf += data
                 (*frames, buf) = buf.split(b"\r")
                 for frame in frames:
-                    conn.send(b"ACK " + frame + b"\r")
-                    print(
-                        "[{} ({})]: {}".format(
-                            rx_time.isoformat(), delta, frame
-                        )
-                    )
+                    if (
+                        not frame
+                        and delta is not None
+                        and delta > datetime.timedelta(seconds=0.9)
+                    ):
+                        times.append(delta.total_seconds())
+                        print(sum(times) / len(times))
+                    # conn.send(b"ACK " + frame + b"\r")
+                    print("[{} ({})]: {}".format(rx_time.isoformat(), delta, frame))
         print("disconnected")

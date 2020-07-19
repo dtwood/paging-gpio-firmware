@@ -6,40 +6,25 @@ name = "paging-gpio"
 version = "0.1.0"
 
 [dependencies]
-cortex-m = "0.5"
+cortex-m = "0.6"
 cortex-m-rt = "0.6"
+cortex-m-rtic = "0.5"
 embedded-hal = "0.2"
-heapless = "*"
-
-[dependencies.cortex-m-rtfm]
-git = "https://github.com/japaric/cortex-m-rtfm"
-features = ["timer-queue"]
+heapless = "0.5"
+log = "0.4.8"
 
 [dependencies.smoltcp]
-version = "0.5"
+version = "0.6"
 default_features = false
 features = [
-    # "proto-ipv4",
-    "proto-ipv6",
-    # "socket-raw",
-    # "socket-udp",
+    "proto-ipv4",
     "socket-tcp",
+    "ethernet",
 ]
 
 [dependencies.tm4c129x-hal]
 features = ["rt"]
-path = "../../tiva-demo/tm4c-hal/tm4c129x-hal"
+path = "../tm4c-hal/tm4c129x-hal"
 
-# this lets you use `cargo fix`!
-[[bin]]
-name = "paging-gpio"
-test = false
-bench = false
-
-[profile.release]
-codegen-units = 1 # better optimizations
-debug = true # symbols are nice and they don't increase the size on Flash
-lto = true # better optimizations
-
-[patch.crates-io]
-tm4c129x = { path = "../dslite2svd/crates/tm4c129x" }
+[profile.dev]
+opt-level = 3
