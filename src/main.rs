@@ -1,12 +1,12 @@
 #![no_std]
 #![no_main]
 #![allow(deprecated)]
-#![allow(non_camel_case_types)]
+#![warn(clippy::all, clippy::pedantic)]
 
 use core::fmt::Write;
-use core::{convert::TryInto, panic::PanicInfo};
+use core::{convert::TryInto, mem::MaybeUninit, panic::PanicInfo};
 use cortex_m_rt::exception;
-use heapless::{consts, String};
+use heapless::{consts, String, Vec};
 use rtic::cyccnt::Duration;
 use smoltcp::iface::{EthernetInterface, EthernetInterfaceBuilder, Neighbor, NeighborCache};
 use smoltcp::socket::{SocketHandle, SocketSet, SocketSetItem, TcpSocket, TcpSocketBuffer};
@@ -64,8 +64,6 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
-const NUM_BUTTONS: usize = 2;
-
 /// Get port between 49152 and 65535
 fn get_ephemeral_port() -> u16 {
     let rand = unsafe { (*tm4c129x::HIB::ptr()).rtcss.read().bits() };
@@ -75,7 +73,38 @@ fn get_ephemeral_port() -> u16 {
         rand -= 65535 - 49142;
     }
 
-    rand as u16
+    rand.try_into().unwrap()
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum SwitchWhen {
+    Always,
+    SecondariesOn,
+    SecondariesOff,
+    Never,
+}
+
+pub struct Zone {
+    name: &'static str,
+    mixer_channel: u8,
+    // relay: gpio::Pxx<gpio::Output<gpio::PushPull>>,
+}
+
+pub type ChannelStatus = (
+    gpio::Pxx<gpio::Input<gpio::PullUp>>,
+    Vec<(&'static Zone, SwitchWhen), consts::U8>,
+);
+
+pub struct ControlStation {
+    name: &'static str,
+    mixer_channel: u8,
+    buttons: Vec<ChannelStatus, consts::U8>,
+}
+
+macro_rules! vec {
+    () => (Vec::new());
+    ($($x:expr),*) => ({let mut v = Vec::new(); $(v.push($x).map_err(|_| ()).unwrap();)* v});
+    ($($x:expr,)*) => (vec![$($x),*]);
 }
 
 #[rtic::app(device = tm4c129x_hal::tm4c129x, peripherals = true, monotonic=rtic::cyccnt::CYCCNT)]
@@ -87,7 +116,9 @@ const APP: () = {
         CLIENT_HANDLE: SocketHandle,
 
         HIB: tm4c129x_hal::hib::Hib,
-        BUTTONS: [gpio::Pxx<gpio::Input<gpio::PullUp>>; NUM_BUTTONS],
+
+        CONTROL_STATIONS: [ControlStation; 5],
+        SECONDARIES_DETECT: gpio::Pxx<gpio::Input<gpio::PullUp>>,
     }
 
     #[init(spawn = [gpio_poll, keepalive])]
@@ -100,21 +131,21 @@ const APP: () = {
         static mut SOCKET_SET_ENTRIES: [Option<SocketSetItem<'static, 'static>>; 2] = [None, None];
 
         let sc = c.device.SYSCTL.constrain();
-        // let porta = c.device.GPIO_PORTA_AHB.split(&sc.power_control);
+        let porta = c.device.GPIO_PORTA_AHB.split(&sc.power_control);
         // let portb = c.device.GPIO_PORTB_AHB.split(&sc.power_control);
         // let portc = c.device.GPIO_PORTC_AHB.split(&sc.power_control);
-        // let portd = c.device.GPIO_PORTD_AHB.split(&sc.power_control);
+        let portd = c.device.GPIO_PORTD_AHB.split(&sc.power_control);
         // let porte = c.device.GPIO_PORTE_AHB.split(&sc.power_control);
         let portf = c.device.GPIO_PORTF_AHB.split(&sc.power_control);
-        // let portg = c.device.GPIO_PORTG_AHB.split(&sc.power_control);
-        // let porth = c.device.GPIO_PORTH_AHB.split(&sc.power_control);
-        let portj = c.device.GPIO_PORTJ_AHB.split(&sc.power_control);
-        // let portk = c.device.GPIO_PORTK.split(&sc.power_control);
+        let portg = c.device.GPIO_PORTG_AHB.split(&sc.power_control);
+        let porth = c.device.GPIO_PORTH_AHB.split(&sc.power_control);
+        // let portj = c.device.GPIO_PORTJ_AHB.split(&sc.power_control);
+        let portk = c.device.GPIO_PORTK.split(&sc.power_control);
         // let portl = c.device.GPIO_PORTL.split(&sc.power_control);
-        // let portm = c.device.GPIO_PORTM.split(&sc.power_control);
+        let portm = c.device.GPIO_PORTM.split(&sc.power_control);
         let portn = c.device.GPIO_PORTN.split(&sc.power_control);
-        // let portp = c.device.GPIO_PORTP.split(&sc.power_control);
-        // let portq = c.device.GPIO_PORTQ.split(&sc.power_control);
+        let portp = c.device.GPIO_PORTP.split(&sc.power_control);
+        let portq = c.device.GPIO_PORTQ.split(&sc.power_control);
 
         let mut clocks = sc.clock_setup;
         clocks.oscillator = Oscillator::Main(
@@ -145,9 +176,7 @@ const APP: () = {
 
         for led in &mut leds {
             led.set_high();
-            for _ in 0..500_000 {
-                cortex_m::asm::nop();
-            }
+            cortex_m::asm::delay(500_000);
             led.set_low();
         }
 
@@ -166,7 +195,7 @@ const APP: () = {
         *IP_ADDRS = Some([IpCidr::new(IpAddress::v4(192, 168, 0, 51), 24)]);
 
         let iface = EthernetInterfaceBuilder::new(device)
-            .ethernet_addr(EthernetAddress([0x00u8, 0x1A, 0xB6, 0x00, 0x02, 0x74]))
+            .ethernet_addr(EthernetAddress([0x00, 0x1A, 0xB6, 0x00, 0x02, 0x74]))
             .neighbor_cache(neighbor_cache)
             .ip_addrs(&mut IP_ADDRS.as_mut().unwrap()[..])
             .finalize();
@@ -186,6 +215,172 @@ const APP: () = {
         c.spawn.gpio_poll().unwrap();
         c.spawn.keepalive().unwrap();
 
+        static mut OFFICES: MaybeUninit<Zone> = MaybeUninit::uninit();
+        static mut BACKSTAGE: MaybeUninit<Zone> = MaybeUninit::uninit();
+        static mut STAGE: MaybeUninit<Zone> = MaybeUninit::uninit();
+        static mut FRONT_OF_HOUSE: MaybeUninit<Zone> = MaybeUninit::uninit();
+        static mut REHEARSAL_ROOM: MaybeUninit<Zone> = MaybeUninit::uninit();
+
+        let offices = unsafe {
+            OFFICES.as_mut_ptr().write(Zone {
+                name: "Offices",
+                mixer_channel: 1,
+                // relay: portn.pn5.into_push_pull_output().downgrade().downgrade(),
+            });
+            &*OFFICES.as_ptr()
+        };
+        let backstage = unsafe {
+            BACKSTAGE.as_mut_ptr().write(Zone {
+                name: "Backstage",
+                mixer_channel: 2,
+                // relay: portn.pn4.into_push_pull_output().downgrade().downgrade(),
+            });
+            &*BACKSTAGE.as_ptr()
+        };
+        let stage = unsafe {
+            STAGE.as_mut_ptr().write(Zone {
+                name: "Stage and Auditorium",
+                mixer_channel: 3,
+                // relay: portp.pp4.into_push_pull_output().downgrade().downgrade(),
+            });
+            &*STAGE.as_ptr()
+        };
+        let front_of_house = unsafe {
+            FRONT_OF_HOUSE.as_mut_ptr().write(Zone {
+                name: "Front of House",
+                mixer_channel: 4,
+                // relay: portq.pq0.into_push_pull_output().downgrade().downgrade(),
+            });
+            &*FRONT_OF_HOUSE.as_ptr()
+        };
+        let rehearsal_room = unsafe {
+            REHEARSAL_ROOM.as_mut_ptr().write(Zone {
+                name: "Rehearsal Room",
+                mixer_channel: 5,
+                // relay: portd.pd5.into_push_pull_output().downgrade().downgrade(),
+            });
+            &*REHEARSAL_ROOM.as_ptr()
+        };
+
+        let control_stations = [
+            ControlStation {
+                name: "Management",
+                mixer_channel: 2,
+                buttons: vec![
+                    (
+                        portm.pm6.into_pull_up_input().downgrade().downgrade(),
+                        vec![(offices, SwitchWhen::Always)],
+                    ),
+                    (
+                        porth.ph0.into_pull_up_input().downgrade().downgrade(),
+                        vec![(backstage, SwitchWhen::Always)],
+                    ),
+                    (
+                        porth.ph1.into_pull_up_input().downgrade().downgrade(),
+                        vec![(stage, SwitchWhen::Always)],
+                    ),
+                    (
+                        portk.pk6.into_pull_up_input().downgrade().downgrade(),
+                        vec![(front_of_house, SwitchWhen::Always)],
+                    ),
+                    (
+                        portk.pk7.into_pull_up_input().downgrade().downgrade(),
+                        vec![(rehearsal_room, SwitchWhen::Always)],
+                    ),
+                ],
+            },
+            ControlStation {
+                name: "SM",
+                mixer_channel: 3,
+                buttons: vec![
+                    (
+                        porta.pa7.into_pull_up_input().downgrade().downgrade(),
+                        vec![(offices, SwitchWhen::Never)],
+                    ),
+                    (
+                        portq.pq2.into_pull_up_input().downgrade().downgrade(),
+                        vec![(backstage, SwitchWhen::Always)],
+                    ),
+                    (
+                        portq.pq3.into_pull_up_input().downgrade().downgrade(),
+                        vec![(stage, SwitchWhen::Never)],
+                    ),
+                    (
+                        portp.pp3.into_pull_up_input().downgrade().downgrade(),
+                        vec![(front_of_house, SwitchWhen::Always)],
+                    ),
+                    (
+                        portq.pq1.into_pull_up_input().downgrade().downgrade(),
+                        vec![(rehearsal_room, SwitchWhen::Never)],
+                    ),
+                ],
+            },
+            ControlStation {
+                name: "Larkum",
+                mixer_channel: 4,
+                buttons: vec![
+                    (
+                        portn.pn2.into_pull_up_input().downgrade().downgrade(),
+                        vec![(offices, SwitchWhen::Always)],
+                    ),
+                    (
+                        portn.pn3.into_pull_up_input().downgrade().downgrade(),
+                        vec![(backstage, SwitchWhen::Always)],
+                    ),
+                    (
+                        portp.pp2.into_pull_up_input().downgrade().downgrade(),
+                        vec![(stage, SwitchWhen::Always)],
+                    ),
+                    (
+                        portm.pm7.into_pull_up_input().downgrade().downgrade(),
+                        vec![(front_of_house, SwitchWhen::Always)],
+                    ),
+                    (
+                        portp.pp5.into_pull_up_input().downgrade().downgrade(),
+                        vec![(rehearsal_room, SwitchWhen::Always)],
+                    ),
+                ],
+            },
+            ControlStation {
+                name: "Test",
+                mixer_channel: 5,
+                buttons: vec![
+                    (
+                        portm.pm3.into_pull_up_input().downgrade().downgrade(),
+                        vec![(offices, SwitchWhen::Always)],
+                    ),
+                    (
+                        porth.ph2.into_pull_up_input().downgrade().downgrade(),
+                        vec![(backstage, SwitchWhen::Always)],
+                    ),
+                    (
+                        porth.ph3.into_pull_up_input().downgrade().downgrade(),
+                        vec![(stage, SwitchWhen::Always)],
+                    ),
+                    (
+                        portd.pd1.into_pull_up_input().downgrade().downgrade(),
+                        vec![(front_of_house, SwitchWhen::Always)],
+                    ),
+                ],
+            },
+            ControlStation {
+                name: "Phone",
+                mixer_channel: 1,
+                buttons: vec![(
+                    portf.pf2.into_pull_up_input().downgrade().downgrade(),
+                    vec![
+                        (offices, SwitchWhen::Always),
+                        (backstage, SwitchWhen::Always),
+                        (stage, SwitchWhen::SecondariesOff),
+                        (front_of_house, SwitchWhen::SecondariesOff),
+                        (rehearsal_room, SwitchWhen::Always),
+                    ],
+                )],
+            },
+        ];
+
+        let secondaries_detect = portg.pg0.into_pull_up_input().downgrade().downgrade();
+
         log::info!("{}: boot", hib.get_millis());
 
         init::LateResources {
@@ -193,91 +388,8 @@ const APP: () = {
             SOCKET_SET: socket_set,
             CLIENT_HANDLE: client_handle,
             HIB: hib,
-            BUTTONS: [
-                // porta.pa2.into_pull_up_input().downgrade().downgrade(),
-                // porta.pa3.into_pull_up_input().downgrade().downgrade(),
-                // porta.pa4.into_pull_up_input().downgrade().downgrade(),
-                // porta.pa5.into_pull_up_input().downgrade().downgrade(),
-                // porta.pa6.into_pull_up_input().downgrade().downgrade(),
-                // porta.pa7.into_pull_up_input().downgrade().downgrade(),
-                // portb.pb0.into_pull_up_input().downgrade().downgrade(),
-                // portb.pb1.into_pull_up_input().downgrade().downgrade(),
-                // portb.pb2.into_pull_up_input().downgrade().downgrade(),
-                // portb.pb3.into_pull_up_input().downgrade().downgrade(),
-                // portb.pb4.into_pull_up_input().downgrade().downgrade(),
-                // portb.pb5.into_pull_up_input().downgrade().downgrade(),
-                // portc.pc4.into_pull_up_input().downgrade().downgrade(),
-                // portc.pc5.into_pull_up_input().downgrade().downgrade(),
-                // portc.pc6.into_pull_up_input().downgrade().downgrade(),
-                // portc.pc7.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd0.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd1.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd2.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd3.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd4.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd5.into_pull_up_input().downgrade().downgrade(),
-                // portd.pd6.into_pull_up_input().downgrade().downgrade(),
-                // porte.pe0.into_pull_up_input().downgrade().downgrade(),
-                // porte.pe1.into_pull_up_input().downgrade().downgrade(),
-                // porte.pe2.into_pull_up_input().downgrade().downgrade(),
-                // porte.pe3.into_pull_up_input().downgrade().downgrade(),
-                // porte.pe4.into_pull_up_input().downgrade().downgrade(),
-                // porte.pe5.into_pull_up_input().downgrade().downgrade(),
-                // portf.pf1.into_pull_up_input().downgrade().downgrade(),
-                // portf.pf2.into_pull_up_input().downgrade().downgrade(),
-                // portf.pf3.into_pull_up_input().downgrade().downgrade(),
-                // portg.pg0.into_pull_up_input().downgrade().downgrade(),
-                // portg.pg1.into_pull_up_input().downgrade().downgrade(),
-                // porth.ph0.into_pull_up_input().downgrade().downgrade(),
-                // porth.ph1.into_pull_up_input().downgrade().downgrade(),
-                // porth.ph2.into_pull_up_input().downgrade().downgrade(),
-                // porth.ph3.into_pull_up_input().downgrade().downgrade(),
-                // portj.pj0.into_pull_up_input().downgrade().downgrade(),
-                // portj.pj1.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk0.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk1.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk2.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk3.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk4.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk5.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk6.into_pull_up_input().downgrade().downgrade(),
-                // portk.pk7.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl0.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl1.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl2.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl3.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl4.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl5.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl6.into_pull_up_input().downgrade().downgrade(),
-                // portl.pl7.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm0.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm1.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm2.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm3.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm4.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm5.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm6.into_pull_up_input().downgrade().downgrade(),
-                // portm.pm7.into_pull_up_input().downgrade().downgrade(),
-                // portn.pn2.into_pull_up_input().downgrade().downgrade(),
-                // portn.pn3.into_pull_up_input().downgrade().downgrade(),
-                // portn.pn4.into_pull_up_input().downgrade().downgrade(),
-                // portn.pn5.into_pull_up_input().downgrade().downgrade(),
-                // portn.pn6.into_pull_up_input().downgrade().downgrade(),
-                // portn.pn7.into_pull_up_input().downgrade().downgrade(),
-                // portp.pp0.into_pull_up_input().downgrade().downgrade(),
-                // portp.pp1.into_pull_up_input().downgrade().downgrade(),
-                // portp.pp2.into_pull_up_input().downgrade().downgrade(),
-                // portp.pp3.into_pull_up_input().downgrade().downgrade(),
-                // portp.pp4.into_pull_up_input().downgrade().downgrade(),
-                // portp.pp5.into_pull_up_input().downgrade().downgrade(),
-                // portq.pq0.into_pull_up_input().downgrade().downgrade(),
-                // portq.pq1.into_pull_up_input().downgrade().downgrade(),
-                // portq.pq2.into_pull_up_input().downgrade().downgrade(),
-                // portq.pq3.into_pull_up_input().downgrade().downgrade(),
-                // portq.pq4.into_pull_up_input().downgrade().downgrade(),
-                portj.pj0.into_pull_up_input().downgrade().downgrade(),
-                portj.pj1.into_pull_up_input().downgrade().downgrade(),
-            ],
+            CONTROL_STATIONS: control_stations,
+            SECONDARIES_DETECT: secondaries_detect,
         }
     }
 
@@ -288,29 +400,11 @@ const APP: () = {
         let iface = c.resources.IFACE;
 
         loop {
-            let _ = socket_set.lock(|socket_set| {
-                let now: i64 = hib.lock(|hib| hib.get_millis().try_into().unwrap());
+            let now: i64 = hib.lock(|hib| hib.get_millis().try_into().unwrap());
+
+            socket_set.lock(|socket_set| {
                 let _ = iface.poll(socket_set, Instant::from_millis(now));
             });
-
-            // if socket.can_recv() {
-            //     let recv = socket.recv(|buffer| (buffer.len(), buffer)).unwrap();
-            //     log::info!(
-            //         "{}: rx {:?}",
-            //         c.resources.HIB.get_millis(),
-            //         ::core::str::from_utf8(recv)
-            //     );
-            // }
-
-            // if let Some(delay) = c.resources.IFACE.poll_delay(
-            //     &*c.resources.SOCKET_SET,
-            //     rtic::Instant::now().to_smol_instant(),
-            // ) {
-            //     let wake_at = rtfm::Instant::now().to_smol_instant() + delay;
-            //     let _ = rtfm::Instant::now().handle_ethernet(wake_at.to_rtfm_instant());
-            // } else {
-            //     dbg!();
-            // }
         }
     }
 
@@ -336,9 +430,8 @@ const APP: () = {
                         .unwrap();
                 }
 
-                let s = "devstatus runmode\n";
-                if let Ok(true) = socket.send(|buffer| {
-                    let bytes = s.as_bytes();
+                let send_runmode = |buffer: &mut [u8]| {
+                    let bytes = b"devstatus runmode\n";
 
                     if buffer.len() > bytes.len() {
                         buffer[0..bytes.len()].copy_from_slice(bytes);
@@ -346,9 +439,10 @@ const APP: () = {
                     } else {
                         (0, false)
                     }
-                }) {
-                    // *old_state = Some(new_state);
-                    // log::info!("{}: tx {:?}", c.resources.HIB.get_millis(), s)
+                };
+
+                if let Ok(true) = socket.send(send_runmode) {
+                    log::info!("sent keepalive");
                 }
             })
         });
@@ -360,11 +454,12 @@ const APP: () = {
 
     #[task(
         schedule = [gpio_poll],
-        resources=[SOCKET_SET, CLIENT_HANDLE, BUTTONS, HIB],
+        resources=[SOCKET_SET, CLIENT_HANDLE, CONTROL_STATIONS, HIB, SECONDARIES_DETECT],
         priority=2,
     )]
     fn gpio_poll(c: gpio_poll::Context) {
-        static mut OLD_STATE: [Option<bool>; NUM_BUTTONS] = [None; NUM_BUTTONS];
+        static mut OLD_STATE: [Option<u8>; 10] = [None; 10];
+        let mut new_state: [u8; 10] = [0; 10];
 
         let mut socket = c
             .resources
@@ -380,40 +475,64 @@ const APP: () = {
                 .unwrap();
         }
 
-        for (index, (button, old_state)) in c
-            .resources
-            .BUTTONS
-            .iter()
-            .zip(OLD_STATE.iter_mut())
-            .enumerate()
-        {
-            let new_state = button.is_low();
+        let secondaries_on = c.resources.SECONDARIES_DETECT.is_high();
 
-            if Some(new_state) != *old_state {
-                let mut s = String::<consts::U64>::new();
-                if let Ok(true) = socket.send(|buffer| {
-                    write!(
-                        s,
-                        "devstatus runmode\nset MTX:Index_{} 0 0 {}\nset MTX:Index_{} 0 0 {}\n",
-                        index % 5 + 1,
-                        if new_state { index / 5 + 1 } else { 0 },
-                        index % 5 + 6,
-                        if new_state { 1 } else { 0 },
-                    )
-                    .unwrap();
-
-                    let bytes = s.as_bytes();
-
-                    if buffer.len() > bytes.len() {
-                        buffer[0..bytes.len()].copy_from_slice(bytes);
-                        (bytes.len(), true)
-                    } else {
-                        (0, false)
-                    }
-                }) {
-                    *old_state = Some(new_state);
-                    log::info!("{}: tx {:?}", c.resources.HIB.get_millis(), s)
+        for control_station in c.resources.CONTROL_STATIONS.iter() {
+            for (button, zones) in control_station.buttons.iter() {
+                if button.is_high() {
+                    continue;
                 }
+
+                for (zone, switch_when) in zones.iter() {
+                    match (switch_when, secondaries_on) {
+                        (SwitchWhen::Always, _)
+                        | (SwitchWhen::SecondariesOn, true)
+                        | (SwitchWhen::SecondariesOff, false) => {}
+                        _ => continue,
+                    }
+
+                    if new_state[usize::from(zone.mixer_channel) - 1] != 0 {
+                        continue;
+                    }
+
+                    new_state[usize::from(zone.mixer_channel) - 1] = control_station.mixer_channel;
+                    new_state[usize::from(zone.mixer_channel) + 5 - 1] = 1;
+
+                    log::info!("{} -> {}", control_station.name, zone.name);
+                }
+            }
+        }
+
+        let mut data = String::<consts::U512>::new();
+
+        let send_update = |buffer: &mut [u8]| {
+            for (index, (&old_state, &new_state)) in
+                OLD_STATE.iter().zip(new_state.iter()).enumerate()
+            {
+                if Some(new_state) != old_state {
+                    let mut s = String::<consts::U32>::new();
+
+                    writeln!(s, "set MTX::index_{} 0 0 {}", index + 1, new_state).unwrap();
+
+                    data.push_str(s.as_str()).unwrap();
+                }
+            }
+
+            if buffer.len() > data.len() {
+                buffer[0..data.len()].copy_from_slice(data.as_bytes());
+                (data.len(), true)
+            } else {
+                (0, false)
+            }
+        };
+
+        if let Ok(true) = socket.send(send_update) {
+            for (old_state, &new_state) in OLD_STATE.iter_mut().zip(new_state.iter()) {
+                *old_state = Some(new_state);
+            }
+
+            if data.len() > 0 {
+                log::info!("{}: tx: {:?}", c.resources.HIB.get_millis(), data);
             }
         }
 
